@@ -1,6 +1,9 @@
 "use client";
+/* eslint-disable react-hooks/set-state-in-effect */
 
 import {
+  memo,
+  useCallback,
   useEffect,
   useMemo,
   useRef,
@@ -9,9 +12,40 @@ import {
   type CSSProperties,
   type DragEvent,
   type InputHTMLAttributes,
+  type MouseEvent as ReactMouseEvent,
 } from "react";
+import {
+  Background,
+  Controls,
+  Handle,
+  MiniMap,
+  Panel,
+  Position,
+  SelectionMode,
+  applyNodeChanges,
+  type Edge as FlowEdge,
+  type Connection,
+  type FinalConnectionState,
+  type Node as FlowNode,
+  type NodeProps,
+  type OnNodesChange,
+  type ReactFlowInstance,
+} from "@xyflow/react";
+import dynamic from "next/dynamic";
+import "@xyflow/react/dist/style.css";
+import {
+  ReferenceBoardView,
+  type BoardAsset,
+} from "./reference-board";
+import { readLocalAssetBlob, storeLocalAssetBlob } from "./local-assets";
 
-type Section = "nodes" | "graph" | "assets" | "narrative" | "topics";
+type Section =
+  | "nodes"
+  | "graph"
+  | "assets"
+  | "boards"
+  | "narrative"
+  | "topics";
 type NodeKind =
   | "Space"
   | "Person"
@@ -30,6 +64,7 @@ type KnowledgeNode = {
   summary: string;
   tags: string[];
   assetCount: number;
+  assetIds?: string[];
   x: number;
   y: number;
 };
@@ -42,15 +77,7 @@ type Relation = {
   evidence: string;
 };
 
-type AssetItem = {
-  id: string;
-  name: string;
-  path: string;
-  kind: "image" | "document" | "model" | "video";
-  size: string;
-  references: number;
-  previewUrl?: string;
-};
+type AssetItem = BoardAsset;
 
 type NarrativeScene = {
   id: string;
@@ -59,6 +86,81 @@ type NarrativeScene = {
   eyebrow: string;
   description: string;
   layout: "hero" | "timeline" | "collection" | "spatial";
+};
+
+type TopicRecord = {
+  id: string;
+  title: string;
+  description: string;
+  nodeCount: number;
+  assetCount: number;
+};
+
+type GraphAnnotation = {
+  id: string;
+  title: string;
+  nodeIds: string[];
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+};
+
+type WorkspaceRecord = {
+  id: string;
+  name: string;
+  nodes: KnowledgeNode[];
+  relations: Relation[];
+  assets: AssetItem[];
+  scenes: NarrativeScene[];
+  topics: TopicRecord[];
+  graphAnnotations: GraphAnnotation[];
+};
+
+type WorkspaceVersion = {
+  id: string;
+  workspaceId: string;
+  workspaceName: string;
+  createdAt: string;
+  snapshot: WorkspaceRecord;
+};
+
+type KnowledgeFlowNode = FlowNode<
+  {
+    node: KnowledgeNode;
+    assets: AssetItem[];
+    onAssetDrop: (nodeId: string, assetId: string) => void;
+  },
+  "knowledge"
+>;
+
+type GraphAnnotationFlowNode = FlowNode<
+  { annotation: GraphAnnotation },
+  "graphAnnotation"
+>;
+
+type StudioFlowNode = KnowledgeFlowNode | GraphAnnotationFlowNode;
+
+type GraphHistoryEntry = {
+  workspaceId: string;
+  nodes: KnowledgeNode[];
+  relations: Relation[];
+  assets: AssetItem[];
+  graphAnnotations: GraphAnnotation[];
+};
+
+type GraphContextMenuState = {
+  x: number;
+  y: number;
+  nodeId: string | null;
+};
+
+type GraphConnectionPickerState = {
+  sourceNodeId: string;
+  x: number;
+  y: number;
+  flowX: number;
+  flowY: number;
 };
 
 type EntryLike = {
@@ -81,12 +183,18 @@ const kindMeta: Record<NodeKind, { label: string; mark: string; color: string }>
   Concept: { label: "概念", mark: "C", color: "#68624a" },
 };
 
-const sectionMeta: Array<{ id: Section; label: string; shortcut: string }> = [
+const sectionMeta: Array<{
+  id: Section;
+  label: string;
+  shortcut: string;
+  disabled?: boolean;
+}> = [
   { id: "nodes", label: "节点", shortcut: "1" },
   { id: "graph", label: "图谱", shortcut: "2" },
   { id: "assets", label: "资源", shortcut: "3" },
-  { id: "narrative", label: "Narrative", shortcut: "4" },
-  { id: "topics", label: "专题", shortcut: "5" },
+  { id: "boards", label: "参考板", shortcut: "4" },
+  { id: "narrative", label: "Narrative", shortcut: "5", disabled: true },
+  { id: "topics", label: "专题", shortcut: "6", disabled: true },
 ];
 
 const initialNodes: KnowledgeNode[] = [
@@ -100,6 +208,7 @@ const initialNodes: KnowledgeNode[] = [
       "以圣保禄学院、天主之母教堂遗址及其周边城市空间为核心的历史文化场域。",
     tags: ["建筑遗产", "城市空间", "文化记忆"],
     assetCount: 18,
+    assetIds: ["asset-1", "asset-2", "asset-6"],
     x: 330,
     y: 190,
   },
@@ -113,6 +222,7 @@ const initialNodes: KnowledgeNode[] = [
       "火灾摧毁了教堂主体建筑，仅留下今日所见的前壁、石阶及部分遗存。",
     tags: ["火灾", "建筑变迁"],
     assetCount: 6,
+    assetIds: ["asset-4"],
     x: 605,
     y: 95,
   },
@@ -126,6 +236,7 @@ const initialNodes: KnowledgeNode[] = [
       "清代系统记述澳门地理、建置、贸易与社会生活的重要地方文献。",
     tags: ["地方志", "历史文献"],
     assetCount: 4,
+    assetIds: ["asset-3"],
     x: 70,
     y: 80,
   },
@@ -139,6 +250,7 @@ const initialNodes: KnowledgeNode[] = [
       "参与学院、教堂与跨文化知识传播活动的宗教及学术群体。",
     tags: ["耶稣会", "知识传播"],
     assetCount: 9,
+    assetIds: [],
     x: 80,
     y: 310,
   },
@@ -152,6 +264,7 @@ const initialNodes: KnowledgeNode[] = [
       "融合欧洲宗教建筑、东方装饰母题与本地工艺的石构立面。",
     tags: ["石构", "建筑装饰"],
     assetCount: 22,
+    assetIds: ["asset-1", "asset-2"],
     x: 610,
     y: 330,
   },
@@ -236,9 +349,17 @@ const initialAssets: AssetItem[] = [
     size: "214.8 MB",
     references: 1,
   },
+  {
+    id: "asset-6",
+    name: "高地空间研究札记",
+    path: "文字块/研究札记/",
+    kind: "text",
+    size: "1.8 KB",
+    references: 0,
+  },
 ];
 
-const scenes: NarrativeScene[] = [
+const initialScenes: NarrativeScene[] = [
   {
     id: "scene-1",
     index: "01",
@@ -277,15 +398,55 @@ const scenes: NarrativeScene[] = [
   },
 ];
 
-const typeCounts: Record<NodeKind, number> = {
-  Space: 12,
-  Person: 27,
-  Event: 18,
-  Document: 46,
-  Artifact: 31,
-  Media: 64,
-  Concept: 15,
+const initialTopics: TopicRecord[] = [
+  {
+    id: "topic-ruins",
+    title: "大三巴高地",
+    description: "数字铭印研究",
+    nodeCount: 52,
+    assetCount: 74,
+  },
+  {
+    id: "topic-macau",
+    title: "澳门历史城区",
+    description: "世界遗产语境中的城市空间与文化记忆。",
+    nodeCount: 84,
+    assetCount: 126,
+  },
+  {
+    id: "topic-colonial",
+    title: "殖民空间研究",
+    description: "历史城市中权力、宗教与日常实践的空间关系。",
+    nodeCount: 19,
+    assetCount: 38,
+  },
+];
+
+const blankScene: NarrativeScene = {
+  id: "scene-welcome",
+  index: "01",
+  eyebrow: "新专题 · 场景",
+  title: "未命名叙事",
+  description: "在 Narrative 中组织节点、资源和三维内容。",
+  layout: "hero",
 };
+
+function createInitialWorkspace(): WorkspaceRecord {
+  return {
+    id: "workspace-ruins",
+    name: "大三巴高地研究",
+    nodes: initialNodes.map((node) => ({
+      ...node,
+      tags: [...node.tags],
+      assetIds: [...(node.assetIds ?? [])],
+    })),
+    relations: relations.map((relation) => ({ ...relation })),
+    assets: initialAssets.map((asset) => ({ ...asset })),
+    scenes: initialScenes.map((scene) => ({ ...scene })),
+    topics: initialTopics.map((topic) => ({ ...topic })),
+    graphAnnotations: [],
+  };
+}
 
 const directoryInputProps = {
   webkitdirectory: "",
@@ -301,8 +462,20 @@ function assetKind(file: File): AssetItem["kind"] {
   const name = file.name.toLowerCase();
   if (file.type.startsWith("image/")) return "image";
   if (file.type.startsWith("video/")) return "video";
+  if (
+    file.type.startsWith("audio/") ||
+    /\.(mp3|wav|ogg|m4a|aac|flac|opus)$/i.test(name)
+  ) {
+    return "audio";
+  }
   if (name.endsWith(".glb") || name.endsWith(".gltf") || name.endsWith(".obj") || name.endsWith(".fbx")) {
     return "model";
+  }
+  if (
+    file.type.startsWith("text/") ||
+    /\.(md|txt|json|xml|html|css|js|ts)$/i.test(name)
+  ) {
+    return "text";
   }
   return "document";
 }
@@ -326,6 +499,8 @@ function assetGlyph(kind: AssetItem["kind"]) {
   if (kind === "model") return "3D";
   if (kind === "document") return "DOC";
   if (kind === "video") return "▶";
+  if (kind === "audio") return "♫";
+  if (kind === "text") return "TXT";
   return "IMG";
 }
 
@@ -343,12 +518,168 @@ function StudioLogo() {
   );
 }
 
+const KnowledgeGraphNode = memo(function KnowledgeGraphNode({
+  data,
+  selected,
+}: NodeProps<KnowledgeFlowNode>) {
+  const node = data.node;
+  return (
+    <div
+      className={`knowledge-card ${selected ? "selected" : ""}`}
+      data-node-id={node.id}
+      role="button"
+      tabIndex={0}
+      aria-label={`${kindMeta[node.kind].label}节点：${node.title}`}
+      style={{ "--node-color": kindMeta[node.kind].color } as CSSProperties}
+      onDragOver={(event) => {
+        if (event.dataTransfer.types.includes("application/x-ins-asset")) {
+          event.preventDefault();
+          event.dataTransfer.dropEffect = "copy";
+        }
+      }}
+      onDrop={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        const assetId = event.dataTransfer.getData("application/x-ins-asset");
+        if (assetId) data.onAssetDrop(node.id, assetId);
+      }}
+    >
+      <Handle
+        type="target"
+        position={Position.Left}
+        className="knowledge-handle knowledge-handle-target"
+        aria-label={`连接到${node.title}`}
+      />
+      <div className="knowledge-card-topline">
+        <span>{kindMeta[node.kind].label.toUpperCase()} NODE</span>
+        <i>{data.assets.length}</i>
+      </div>
+      <strong>{node.title}</strong>
+      <small>{node.period}</small>
+      <div className="knowledge-card-tags">
+        {node.tags.slice(0, 2).map((tag) => (
+          <span key={tag}>{tag}</span>
+        ))}
+      </div>
+      <div className="node-contained-assets">
+        {data.assets.slice(0, 3).map((asset) => (
+          <span key={asset.id} className={`node-asset-chip asset-${asset.kind}`}>
+            <i>{assetGlyph(asset.kind)}</i>
+            <b>{asset.name}</b>
+          </span>
+        ))}
+        {data.assets.length === 0 && <span className="node-drop-hint">拖入资产</span>}
+        {data.assets.length > 3 && <small>＋{data.assets.length - 3}</small>}
+      </div>
+      <Handle
+        type="source"
+        position={Position.Right}
+        className="knowledge-handle knowledge-handle-source"
+        aria-label={`从${node.title}牵线创建或关联节点`}
+      />
+    </div>
+  );
+});
+
+const GraphAnnotationNode = memo(function GraphAnnotationNode({
+  data,
+  selected,
+}: NodeProps<GraphAnnotationFlowNode>) {
+  return (
+    <section
+      className={`graph-annotation-note ${selected ? "selected" : ""}`}
+      aria-label={`图谱备注：${data.annotation.title}`}
+    >
+      <header>
+        <span>COMMENT</span>
+        <strong>{data.annotation.title}</strong>
+        <small>{data.annotation.nodeIds.length} 个节点</small>
+      </header>
+    </section>
+  );
+});
+
+const graphNodeTypes = {
+  knowledge: KnowledgeGraphNode,
+  graphAnnotation: GraphAnnotationNode,
+};
+
+function buildFlowNodes(
+  nodes: KnowledgeNode[],
+  annotations: GraphAnnotation[],
+  assets: AssetItem[],
+  selectedNodeIds: string[],
+  onAssetDrop: (nodeId: string, assetId: string) => void,
+  current: StudioFlowNode[] = [],
+  preserveCanvasPositions = false,
+): StudioFlowNode[] {
+  const currentById = new Map(current.map((node) => [node.id, node]));
+
+  const noteNodes: GraphAnnotationFlowNode[] = annotations.map((annotation) => {
+    const previous = currentById.get(annotation.id);
+    return {
+      ...(previous?.type === "graphAnnotation" ? previous : {}),
+      id: annotation.id,
+      type: "graphAnnotation",
+      position:
+        preserveCanvasPositions && previous
+          ? previous.position
+          : { x: annotation.x, y: annotation.y },
+      style: { width: annotation.width, height: annotation.height },
+      zIndex: -1,
+      selected: selectedNodeIds.includes(annotation.id),
+      data: { annotation },
+    };
+  });
+
+  const knowledgeNodes: KnowledgeFlowNode[] = nodes.map((node) => {
+    const previous = currentById.get(node.id);
+    return {
+      ...(previous?.type === "knowledge" ? previous : {}),
+      id: node.id,
+      type: "knowledge",
+      position:
+        preserveCanvasPositions && previous
+          ? previous.position
+          : { x: node.x, y: node.y },
+      selected: selectedNodeIds.includes(node.id),
+      data: {
+        node,
+        assets: assets.filter((asset) => node.assetIds?.includes(asset.id)),
+        onAssetDrop,
+      },
+    };
+  });
+
+  return [...noteNodes, ...knowledgeNodes];
+}
+
+const ReactFlowCanvas = dynamic(
+  () => import("@xyflow/react").then((module) => module.ReactFlow),
+  { ssr: false },
+);
+const ModelPreview = dynamic(
+  () => import("./model-preview").then((module) => module.ModelPreview),
+  { ssr: false },
+);
+const DocumentMediaPreview = dynamic(
+  () =>
+    import("./document-media-preview").then(
+      (module) => module.DocumentMediaPreview,
+    ),
+  { ssr: false },
+);
+
 function ExplorerView({
   sceneIndex,
+  scenes,
+  topicTitle,
   onSceneChange,
   onExit,
 }: {
   sceneIndex: number;
+  scenes: NarrativeScene[];
+  topicTitle: string;
   onSceneChange: (index: number) => void;
   onExit: () => void;
 }) {
@@ -360,7 +691,7 @@ function ExplorerView({
         <StudioLogo />
         <div className="explorer-topic">
           <span>正在展示</span>
-          <strong>大三巴高地 · 数字铭印研究</strong>
+          <strong>{topicTitle}</strong>
         </div>
         <button className="explorer-exit" type="button" onClick={onExit}>
           退出展示 <kbd>Esc</kbd>
@@ -370,13 +701,24 @@ function ExplorerView({
       <section className="explorer-stage">
         <div className="explorer-grid" aria-hidden="true" />
         <div className="explorer-copy">
-          <span className="explorer-scene-number">{scene.index} / 04</span>
+          <span className="explorer-scene-number">
+            {scene.index} / {String(scenes.length).padStart(2, "0")}
+          </span>
           <p>{scene.eyebrow}</p>
           <h1>{scene.title}</h1>
           <div className="explorer-rule" />
           <p className="explorer-description">{scene.description}</p>
-          <button className="explorer-primary" type="button">
-            开始探索 <span>→</span>
+          <button
+            className="explorer-primary"
+            type="button"
+            onClick={() =>
+              onSceneChange(
+                sceneIndex < scenes.length - 1 ? sceneIndex + 1 : 0,
+              )
+            }
+          >
+            {sceneIndex < scenes.length - 1 ? "进入下一场景" : "重新开始"}{" "}
+            <span>→</span>
           </button>
         </div>
 
@@ -440,29 +782,151 @@ function ExplorerView({
 
 export default function Home() {
   const [section, setSection] = useState<Section>("graph");
-  const [nodes, setNodes] = useState<KnowledgeNode[]>(initialNodes);
+  const [workspaces, setWorkspaces] = useState<WorkspaceRecord[]>(() => [createInitialWorkspace()]);
+  const [activeWorkspaceId, setActiveWorkspaceId] = useState("workspace-ruins");
   const [selectedNodeId, setSelectedNodeId] = useState("space-ruins");
+  const [selectedNodeIds, setSelectedNodeIds] = useState<string[]>(["space-ruins"]);
   const [search, setSearch] = useState("");
-  const [assets, setAssets] = useState<AssetItem[]>(initialAssets);
   const [selectedAssetId, setSelectedAssetId] = useState("asset-2");
   const [dragActive, setDragActive] = useState(false);
   const [activeScene, setActiveScene] = useState(0);
   const [explorer, setExplorer] = useState(false);
   const [notice, setNotice] = useState("工作区已自动保存");
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  const [inspectorOpen, setInspectorOpen] = useState(true);
+  const [workspaceMenuOpen, setWorkspaceMenuOpen] = useState(false);
+  const [dialog, setDialog] = useState<"workspace" | "topic" | null>(null);
+  const [workspaceName, setWorkspaceName] = useState("");
+  const [topicTitle, setTopicTitle] = useState("");
+  const [topicDescription, setTopicDescription] = useState("");
+  const [activeTopicId, setActiveTopicId] = useState("");
+  const [nodeKindFilter, setNodeKindFilter] = useState<NodeKind | "all">("all");
+  const [nodeSort, setNodeSort] = useState<"manual" | "title" | "kind">("manual");
+  const [assetFolderFilter, setAssetFolderFilter] = useState("all");
+  const [assetKindFilter, setAssetKindFilter] = useState<AssetItem["kind"] | "all">("all");
+  const [assetLayout, setAssetLayout] = useState<"grid" | "list">("grid");
+  const [basicInfoOpen, setBasicInfoOpen] = useState(true);
+  const [versionsOpen, setVersionsOpen] = useState(false);
+  const [versions, setVersions] = useState<WorkspaceVersion[]>([]);
+  const [graphContextMenu, setGraphContextMenu] = useState<GraphContextMenuState | null>(null);
+  const [connectionPicker, setConnectionPicker] = useState<GraphConnectionPickerState | null>(null);
+  const [historyVersion, setHistoryVersion] = useState(0);
+  const [hydrated, setHydrated] = useState(false);
   const noticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const directoryInput = useRef<HTMLInputElement>(null);
+  const flowInstance = useRef<ReactFlowInstance<StudioFlowNode, FlowEdge> | null>(null);
+  const historyPast = useRef<GraphHistoryEntry[]>([]);
+  const historyFuture = useRef<GraphHistoryEntry[]>([]);
+  const nodeDragActive = useRef(false);
+  const hydratedAssetIds = useRef(new Set<string>());
 
-  const selectedNode = nodes.find((node) => node.id === selectedNodeId) ?? nodes[0];
+  const activeWorkspace =
+    workspaces.find((workspace) => workspace.id === activeWorkspaceId) ?? workspaces[0];
+  const nodes = activeWorkspace?.nodes ?? [];
+  const relations = activeWorkspace?.relations ?? [];
+  const assets = activeWorkspace?.assets ?? [];
+  const scenes = activeWorkspace?.scenes.length ? activeWorkspace.scenes : [blankScene];
+  const topics = activeWorkspace?.topics ?? [];
+  const graphAnnotations = activeWorkspace?.graphAnnotations ?? [];
+
+  const updateActiveWorkspace = (
+    updater: (workspace: WorkspaceRecord) => WorkspaceRecord,
+  ) => {
+    setWorkspaces((current) =>
+      current.map((workspace) =>
+        workspace.id === activeWorkspaceId ? updater(workspace) : workspace,
+      ),
+    );
+  };
+
+  const setNodes = (
+    updater: KnowledgeNode[] | ((current: KnowledgeNode[]) => KnowledgeNode[]),
+  ) => {
+    updateActiveWorkspace((workspace) => ({
+      ...workspace,
+      nodes: typeof updater === "function" ? updater(workspace.nodes) : updater,
+    }));
+  };
+
+  const setAssets = (
+    updater: AssetItem[] | ((current: AssetItem[]) => AssetItem[]),
+  ) => {
+    updateActiveWorkspace((workspace) => ({
+      ...workspace,
+      assets: typeof updater === "function" ? updater(workspace.assets) : updater,
+    }));
+  };
+
+  const selectedNode =
+    nodes.find((node) => node.id === selectedNodeId) ??
+    (selectedNodeId ? undefined : nodes[0]);
   const selectedAsset = assets.find((asset) => asset.id === selectedAssetId) ?? assets[0];
+  const activeTopic =
+    topics.find((topic) => topic.id === activeTopicId) ?? topics[0];
+  const selectedNodeAssets = selectedNode
+    ? assets.filter((asset) => selectedNode.assetIds?.includes(asset.id))
+    : [];
+
+  const typeCounts = useMemo(
+    () =>
+      nodes.reduce(
+        (counts, node) => ({ ...counts, [node.kind]: counts[node.kind] + 1 }),
+        {
+          Space: 0,
+          Person: 0,
+          Event: 0,
+          Document: 0,
+          Artifact: 0,
+          Media: 0,
+          Concept: 0,
+        } as Record<NodeKind, number>,
+      ),
+    [nodes],
+  );
 
   const visibleNodes = useMemo(() => {
     const keyword = search.trim().toLowerCase();
-    if (!keyword) return nodes;
-    return nodes.filter((node) =>
-      [node.title, node.subtitle, node.kind, ...node.tags].join(" ").toLowerCase().includes(keyword),
+    const filtered = nodes.filter(
+      (node) =>
+        (nodeKindFilter === "all" || node.kind === nodeKindFilter) &&
+        (!keyword ||
+          [node.title, node.subtitle, node.kind, ...node.tags]
+            .join(" ")
+            .toLowerCase()
+            .includes(keyword)),
     );
-  }, [nodes, search]);
+    if (nodeSort === "title") {
+      return [...filtered].sort((a, b) => a.title.localeCompare(b.title, "zh-CN"));
+    }
+    if (nodeSort === "kind") {
+      return [...filtered].sort((a, b) =>
+        kindMeta[a.kind].label.localeCompare(kindMeta[b.kind].label, "zh-CN"),
+      );
+    }
+    return filtered;
+  }, [nodeKindFilter, nodeSort, nodes, search]);
+
+  const filteredAssets = useMemo(() => {
+    const keyword = search.trim().toLowerCase();
+    return assets.filter((asset) => {
+      const folderMatches =
+        assetFolderFilter === "all" ||
+        asset.path.includes(assetFolderFilter);
+      const kindMatches =
+        assetKindFilter === "all" || asset.kind === assetKindFilter;
+      const searchMatches =
+        !keyword ||
+        `${asset.name} ${asset.path} ${asset.kind}`
+          .toLowerCase()
+          .includes(keyword);
+      return folderMatches && kindMatches && searchMatches;
+    });
+  }, [assetFolderFilter, assetKindFilter, assets, search]);
+
+  const visibleNodeIds = useMemo(
+    () => new Set(visibleNodes.map((node) => node.id)),
+    [visibleNodes],
+  );
 
   const flash = (message: string) => {
     setNotice(message);
@@ -470,11 +934,382 @@ export default function Home() {
     noticeTimer.current = setTimeout(() => setNotice("工作区已自动保存"), 2400);
   };
 
+  const createGraphSnapshot = (): GraphHistoryEntry => ({
+    workspaceId: activeWorkspaceId,
+    nodes: nodes.map((node) => ({
+      ...node,
+      tags: [...node.tags],
+      assetIds: [...(node.assetIds ?? [])],
+    })),
+    relations: relations.map((relation) => ({ ...relation })),
+    assets: assets.map((asset) => ({ ...asset })),
+    graphAnnotations: graphAnnotations.map((annotation) => ({
+      ...annotation,
+      nodeIds: [...annotation.nodeIds],
+    })),
+  });
+
+  const commitGraphHistory = () => {
+    historyPast.current = [...historyPast.current.slice(-39), createGraphSnapshot()];
+    historyFuture.current = [];
+    setHistoryVersion((version) => version + 1);
+  };
+
+  const restoreGraphSnapshot = (snapshot: GraphHistoryEntry) => {
+    setWorkspaces((current) =>
+      current.map((workspace) =>
+        workspace.id === snapshot.workspaceId
+          ? {
+              ...workspace,
+              nodes: snapshot.nodes.map((node) => ({
+                ...node,
+                tags: [...node.tags],
+                assetIds: [...(node.assetIds ?? [])],
+              })),
+              relations: snapshot.relations.map((relation) => ({ ...relation })),
+              assets: snapshot.assets.map((asset) => ({ ...asset })),
+              graphAnnotations: snapshot.graphAnnotations.map((annotation) => ({
+                ...annotation,
+                nodeIds: [...annotation.nodeIds],
+              })),
+            }
+          : workspace,
+      ),
+    );
+    const nextSelected = snapshot.nodes[0]?.id ?? "";
+    setSelectedNodeId(nextSelected);
+    setSelectedNodeIds(nextSelected ? [nextSelected] : []);
+  };
+
+  const undoGraph = () => {
+    const snapshot = historyPast.current.at(-1);
+    if (!snapshot || snapshot.workspaceId !== activeWorkspaceId) return;
+    historyPast.current = historyPast.current.slice(0, -1);
+    historyFuture.current = [...historyFuture.current, createGraphSnapshot()];
+    restoreGraphSnapshot(snapshot);
+    setHistoryVersion((version) => version + 1);
+    flash("已撤销图谱操作");
+  };
+
+  const redoGraph = () => {
+    const snapshot = historyFuture.current.at(-1);
+    if (!snapshot || snapshot.workspaceId !== activeWorkspaceId) return;
+    historyFuture.current = historyFuture.current.slice(0, -1);
+    historyPast.current = [...historyPast.current, createGraphSnapshot()];
+    restoreGraphSnapshot(snapshot);
+    setHistoryVersion((version) => version + 1);
+    flash("已重做图谱操作");
+  };
+
+  const attachAssetToNode = (nodeId: string, assetId: string) => {
+    const target = nodes.find((node) => node.id === nodeId);
+    const asset = assets.find((item) => item.id === assetId);
+    if (!target || !asset || target.assetIds?.includes(assetId)) return;
+    commitGraphHistory();
+    updateActiveWorkspace((workspace) => ({
+      ...workspace,
+      nodes: workspace.nodes.map((node) =>
+        node.id === nodeId
+          ? {
+              ...node,
+              assetIds: [...(node.assetIds ?? []), assetId],
+              assetCount: (node.assetIds?.length ?? 0) + 1,
+            }
+          : node,
+      ),
+      assets: workspace.assets.map((item) =>
+        item.id === assetId
+          ? { ...item, references: item.references + 1 }
+          : item,
+      ),
+    }));
+    setSelectedNodeId(nodeId);
+    setSelectedNodeIds([nodeId]);
+    flash(`已将「${asset.name}」放入节点`);
+  };
+
+  const importFilesIntoNode = async (nodeId: string, files: File[]) => {
+    if (files.length === 0) return;
+    commitGraphHistory();
+    const additions = files.slice(0, 20).map((file, index): AssetItem => {
+      const kind = assetKind(file);
+      return {
+        id: `node-import-${Date.now()}-${index}`,
+        name: file.name,
+        path: "节点直接导入/",
+        kind,
+        size: formatBytes(file.size),
+        references: 1,
+        previewUrl: URL.createObjectURL(file),
+      };
+    });
+    await Promise.all(
+      additions.map((asset, index) =>
+        storeLocalAssetBlob(asset.id, files[index]),
+      ),
+    );
+    const additionIds = additions.map((asset) => asset.id);
+    updateActiveWorkspace((workspace) => ({
+      ...workspace,
+      assets: [...additions, ...workspace.assets],
+      nodes: workspace.nodes.map((node) =>
+        node.id === nodeId
+          ? {
+              ...node,
+              assetIds: [...(node.assetIds ?? []), ...additionIds],
+              assetCount: (node.assetIds?.length ?? 0) + additionIds.length,
+            }
+          : node,
+      ),
+    }));
+    setSelectedNodeId(nodeId);
+    setSelectedNodeIds([nodeId]);
+    flash(`已将 ${additions.length} 个本地文件导入节点`);
+  };
+
+  const [flowNodes, setFlowNodes] = useState<StudioFlowNode[]>(() =>
+    buildFlowNodes(
+      visibleNodes,
+      graphAnnotations,
+      assets,
+      selectedNodeIds,
+      () => undefined,
+    ),
+  );
+  const flowNodesRef = useRef(flowNodes);
+
+  useEffect(() => {
+    setFlowNodes((current) => {
+      const next = buildFlowNodes(
+        visibleNodes,
+        graphAnnotations,
+        assets,
+        selectedNodeIds,
+        attachAssetToNode,
+        current,
+        nodeDragActive.current,
+      );
+      flowNodesRef.current = next;
+      return next;
+    });
+  }, [assets, graphAnnotations, selectedNodeIds, visibleNodes]);
+
+  const flowEdges = useMemo<FlowEdge[]>(
+    () =>
+      relations
+        .filter(
+          (relation) =>
+            visibleNodeIds.has(relation.source) && visibleNodeIds.has(relation.target),
+        )
+        .map((relation) => ({
+          id: relation.id,
+          source: relation.source,
+          target: relation.target,
+          label: relation.type,
+          className: "knowledge-edge",
+          labelStyle: { fill: "#57544d", fontSize: 8, fontWeight: 700 },
+          labelBgStyle: { fill: "#f7f5ef", fillOpacity: 0.92 },
+          labelBgPadding: [4, 2],
+          style: { stroke: "#87847b", strokeWidth: 1.2 },
+        })),
+    [relations, visibleNodeIds],
+  );
+
+  const saveWorkspaceVersion = () => {
+    const snapshot: WorkspaceRecord = {
+      ...activeWorkspace,
+      nodes: activeWorkspace.nodes.map((node) => ({
+        ...node,
+        tags: [...node.tags],
+        assetIds: [...(node.assetIds ?? [])],
+      })),
+      relations: activeWorkspace.relations.map((relation) => ({ ...relation })),
+      assets: activeWorkspace.assets.map(
+        ({ previewUrl: _previewUrl, ...asset }) => ({ ...asset }),
+      ),
+      scenes: activeWorkspace.scenes.map((scene) => ({ ...scene })),
+      topics: activeWorkspace.topics.map((topic) => ({ ...topic })),
+      graphAnnotations: activeWorkspace.graphAnnotations.map((annotation) => ({
+        ...annotation,
+        nodeIds: [...annotation.nodeIds],
+      })),
+    };
+    const version: WorkspaceVersion = {
+      id: `version-${crypto.randomUUID()}`,
+      workspaceId: activeWorkspace.id,
+      workspaceName: activeWorkspace.name,
+      createdAt: new Date().toISOString(),
+      snapshot,
+    };
+    setVersions((current) => [version, ...current].slice(0, 50));
+    flash("已保存本机版本快照");
+  };
+
+  const restoreWorkspaceVersion = (version: WorkspaceVersion) => {
+    hydratedAssetIds.current.clear();
+    setWorkspaces((current) =>
+      current.map((workspace) =>
+        workspace.id === version.workspaceId
+          ? {
+              ...version.snapshot,
+              assets: version.snapshot.assets.map((asset) => ({ ...asset })),
+            }
+          : workspace,
+      ),
+    );
+    setVersionsOpen(false);
+    flash(`已恢复 ${new Date(version.createdAt).toLocaleString("zh-CN")} 的版本`);
+  };
+
+  const downloadSelectedAsset = () => {
+    if (!selectedAsset?.previewUrl) {
+      flash("该资源只有示例元数据，没有可打开的本机文件");
+      return;
+    }
+    const anchor = document.createElement("a");
+    anchor.href = selectedAsset.previewUrl;
+    anchor.download = selectedAsset.name;
+    anchor.click();
+  };
+
+  useEffect(() => {
+    if (window.innerWidth <= 900) setInspectorOpen(false);
+  }, []);
+
+  useEffect(() => {
+    try {
+      const stored = window.localStorage.getItem("inscription-workspaces-v1");
+      const storedActive = window.localStorage.getItem("inscription-active-workspace-v1");
+      if (stored) {
+        const parsed = JSON.parse(stored) as WorkspaceRecord[];
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          const migrated = parsed.map((workspace) => {
+            const sampleNodeAssets = new Map(
+              initialNodes.map((node) => [node.id, node.assetIds ?? []]),
+            );
+            const knownAssetIds = new Set(workspace.assets.map((asset) => asset.id));
+            return {
+              ...workspace,
+              graphAnnotations: workspace.graphAnnotations ?? [],
+              nodes: workspace.nodes.map((node) => ({
+                ...node,
+                assetIds: [
+                  ...(node.assetIds ?? sampleNodeAssets.get(node.id) ?? []),
+                ],
+              })),
+              assets:
+                workspace.id === "workspace-ruins"
+                  ? [
+                      ...workspace.assets,
+                      ...initialAssets.filter((asset) => !knownAssetIds.has(asset.id)),
+                    ]
+                  : workspace.assets,
+            };
+          });
+          setWorkspaces(migrated);
+          const nextActive =
+            migrated.find((workspace) => workspace.id === storedActive)?.id ?? migrated[0].id;
+          setActiveWorkspaceId(nextActive);
+          const firstNodeId =
+            migrated.find((workspace) => workspace.id === nextActive)?.nodes[0]?.id ?? "";
+          setSelectedNodeId(firstNodeId);
+          setSelectedNodeIds(firstNodeId ? [firstNodeId] : []);
+          setSelectedAssetId(migrated.find((workspace) => workspace.id === nextActive)?.assets[0]?.id ?? "");
+        }
+      }
+    } catch {
+      setNotice("本地数据读取失败，已使用示例工作区");
+    } finally {
+      setHydrated(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    try {
+      const stored = window.localStorage.getItem("inscription-workspace-versions-v1");
+      if (stored) {
+        const parsed = JSON.parse(stored) as WorkspaceVersion[];
+        if (Array.isArray(parsed)) setVersions(parsed);
+      }
+    } catch {
+      // A broken version index must not prevent the workspace from opening.
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!hydrated) return;
+    const persisted = workspaces.map((workspace) => ({
+      ...workspace,
+      assets: workspace.assets.map(({ previewUrl: _previewUrl, ...asset }) => asset),
+    }));
+    window.localStorage.setItem("inscription-workspaces-v1", JSON.stringify(persisted));
+    window.localStorage.setItem("inscription-active-workspace-v1", activeWorkspaceId);
+  }, [activeWorkspaceId, hydrated, workspaces]);
+
+  useEffect(() => {
+    if (!hydrated) return;
+    window.localStorage.setItem(
+      "inscription-workspace-versions-v1",
+      JSON.stringify(versions),
+    );
+  }, [hydrated, versions]);
+
+  useEffect(() => {
+    if (!hydrated) return;
+    let cancelled = false;
+    const hydrateLocalAssets = async () => {
+      for (const asset of assets) {
+        if (
+          asset.previewUrl ||
+          hydratedAssetIds.current.has(asset.id)
+        ) {
+          continue;
+        }
+        hydratedAssetIds.current.add(asset.id);
+        try {
+          const blob = await readLocalAssetBlob(asset.id);
+          if (!blob || cancelled) continue;
+          const previewUrl = URL.createObjectURL(blob);
+          setAssets((current) =>
+            current.map((item) =>
+              item.id === asset.id ? { ...item, previewUrl } : item,
+            ),
+          );
+        } catch {
+          // Sample metadata and older imports may not have a persisted source file.
+        }
+      }
+    };
+    void hydrateLocalAssets();
+    return () => {
+      cancelled = true;
+    };
+  }, [activeWorkspaceId, assets, hydrated]);
+
+  useEffect(() => {
+    setActiveScene(0);
+    const firstNodeId = activeWorkspace?.nodes[0]?.id ?? "";
+    setSelectedNodeId(firstNodeId);
+    setSelectedNodeIds(firstNodeId ? [firstNodeId] : []);
+    setSelectedAssetId(activeWorkspace?.assets[0]?.id ?? "");
+    setGraphContextMenu(null);
+    historyPast.current = [];
+    historyFuture.current = [];
+    setHistoryVersion((version) => version + 1);
+  }, [activeWorkspaceId]);
+
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape" && explorer) setExplorer(false);
+      if (event.key === "Escape") {
+        if (explorer) setExplorer(false);
+        setDialog(null);
+        setWorkspaceMenuOpen(false);
+        setGraphContextMenu(null);
+      }
       if (event.altKey) {
-        const target = sectionMeta.find((item) => item.shortcut === event.key);
+        const target = sectionMeta.find(
+          (item) => item.shortcut === event.key && !item.disabled,
+        );
         if (target) setSection(target.id);
       }
     };
@@ -482,7 +1317,9 @@ export default function Home() {
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [explorer]);
 
-  const addImportedFiles = (files: Array<{ file: File; path: string }>) => {
+  const addImportedFiles = async (
+    files: Array<{ file: File; path: string }>,
+  ) => {
     if (files.length === 0) return;
     const additions = files.slice(0, 80).map(({ file, path }, index): AssetItem => {
       const kind = assetKind(file);
@@ -493,9 +1330,14 @@ export default function Home() {
         kind,
         size: formatBytes(file.size),
         references: 0,
-        previewUrl: kind === "image" ? URL.createObjectURL(file) : undefined,
+        previewUrl: URL.createObjectURL(file),
       };
     });
+    await Promise.all(
+      additions.map((asset, index) =>
+        storeLocalAssetBlob(asset.id, files[index].file),
+      ),
+    );
     setAssets((current) => [...additions, ...current]);
     setSelectedAssetId(additions[0].id);
     setSection("assets");
@@ -511,17 +1353,19 @@ export default function Home() {
         const withEntry = item as DataTransferItem & {
           webkitGetAsEntry?: () => EntryLike | null;
         };
-        return withEntry.webkitGetAsEntry?.() ?? null;
+        return (
+          withEntry.webkitGetAsEntry?.() as EntryLike | null | undefined
+        ) ?? null;
       })
       .filter((entry): entry is EntryLike => Boolean(entry));
 
     if (entries.length > 0) {
       const imported = (await Promise.all(entries.map((entry) => readEntry(entry)))).flat();
-      addImportedFiles(imported);
+      await addImportedFiles(imported);
       return;
     }
 
-    addImportedFiles(
+    await addImportedFiles(
       Array.from(event.dataTransfer.files).map((file) => ({
         file,
         path: file.webkitRelativePath || file.name,
@@ -534,12 +1378,13 @@ export default function Home() {
       file,
       path: file.webkitRelativePath || file.name,
     }));
-    addImportedFiles(files);
+    void addImportedFiles(files);
     event.target.value = "";
   };
 
   const createNode = () => {
-    const id = `node-${Date.now()}`;
+    commitGraphHistory();
+    const id = `node-${crypto.randomUUID()}`;
     const created: KnowledgeNode = {
       id,
       kind: "Concept",
@@ -549,11 +1394,13 @@ export default function Home() {
       summary: "在右侧属性面板补充该节点的研究内容。",
       tags: ["待整理"],
       assetCount: 0,
+      assetIds: [],
       x: 350 + (nodes.length % 3) * 95,
       y: 120 + (nodes.length % 2) * 180,
     };
     setNodes((current) => [...current, created]);
     setSelectedNodeId(id);
+    setSelectedNodeIds([id]);
     setSection("graph");
     flash("已创建 Concept Node");
   };
@@ -564,10 +1411,502 @@ export default function Home() {
     );
   };
 
+  const openWorkspaceDialog = () => {
+    setWorkspaceMenuOpen(false);
+    setWorkspaceName("");
+    setDialog("workspace");
+  };
+
+  const createWorkspace = () => {
+    const name = workspaceName.trim();
+    if (!name) return;
+    const id = `workspace-${Date.now()}`;
+    const created: WorkspaceRecord = {
+      id,
+      name,
+      nodes: [],
+      relations: [],
+      assets: [],
+      scenes: [{ ...blankScene, id: `scene-${Date.now()}` }],
+      topics: [],
+      graphAnnotations: [],
+    };
+    setWorkspaces((current) => [...current, created]);
+    setActiveWorkspaceId(id);
+    setDialog(null);
+    setWorkspaceName("");
+    setSection("graph");
+    flash(`已创建工作区「${name}」`);
+  };
+
+  const switchWorkspace = (workspace: WorkspaceRecord) => {
+    setActiveWorkspaceId(workspace.id);
+    setWorkspaceMenuOpen(false);
+    setSection("graph");
+    flash(`已切换到「${workspace.name}」`);
+  };
+
+  const openTopicDialog = () => {
+    setTopicTitle("");
+    setTopicDescription("");
+    setDialog("topic");
+  };
+
+  const createTopic = () => {
+    const title = topicTitle.trim();
+    if (!title) return;
+    const created: TopicRecord = {
+      id: `topic-${Date.now()}`,
+      title,
+      description: topicDescription.trim() || "尚未填写专题说明。",
+      nodeCount: nodes.length,
+      assetCount: assets.length,
+    };
+    updateActiveWorkspace((workspace) => ({
+      ...workspace,
+      topics: [...workspace.topics, created],
+    }));
+    setDialog(null);
+    setTopicTitle("");
+    setTopicDescription("");
+    setSection("topics");
+    flash(`已创建专题「${title}」`);
+  };
+
+  const createScene = () => {
+    const nextIndex = scenes.length + 1;
+    const scene: NarrativeScene = {
+      ...blankScene,
+      id: `scene-${crypto.randomUUID()}`,
+      index: String(nextIndex).padStart(2, "0"),
+      title: `未命名场景 ${nextIndex}`,
+      eyebrow: "新场景",
+      description: "在这里填写本场景的叙事说明。",
+    };
+    updateActiveWorkspace((workspace) => ({
+      ...workspace,
+      scenes: [...workspace.scenes, scene],
+    }));
+    setActiveScene(nextIndex - 1);
+    flash("已添加 Narrative 场景");
+  };
+
+  const updateActiveScene = (patch: Partial<NarrativeScene>) => {
+    updateActiveWorkspace((workspace) => ({
+      ...workspace,
+      scenes: workspace.scenes.map((scene, index) =>
+        index === activeScene ? { ...scene, ...patch } : scene,
+      ),
+    }));
+  };
+
+  const removeSelectedNodeTag = (tag: string) => {
+    if (!selectedNode) return;
+    updateSelectedNode({
+      tags: selectedNode.tags.filter((item) => item !== tag),
+    });
+  };
+
+  const addSelectedNodeTag = () => {
+    if (!selectedNode) return;
+    const value = window.prompt("输入新标签");
+    const tag = value?.trim();
+    if (!tag || selectedNode.tags.includes(tag)) return;
+    updateSelectedNode({ tags: [...selectedNode.tags, tag] });
+  };
+
+  const onFlowNodesChange = useCallback<OnNodesChange<StudioFlowNode>>(
+    (changes) => {
+      if (
+        changes.some(
+          (change) => change.type === "position" && change.dragging,
+        )
+      ) {
+        nodeDragActive.current = true;
+      }
+
+      const next = applyNodeChanges<StudioFlowNode>(
+        changes,
+        flowNodesRef.current,
+      );
+      flowNodesRef.current = next;
+      setFlowNodes(next);
+
+      if (changes.some((change) => change.type === "select")) {
+        const selection = next
+          .filter((node) => node.selected)
+          .map((node) => node.id);
+        setSelectedNodeIds(selection);
+        setSelectedNodeId(selection.at(-1) ?? "");
+      }
+    },
+    [],
+  );
+
+  const persistFlowPositions = () => {
+    nodeDragActive.current = false;
+    const positions = new Map(
+      flowNodesRef.current.map((node) => [node.id, node.position]),
+    );
+
+    updateActiveWorkspace((workspace) => ({
+      ...workspace,
+      nodes: workspace.nodes.map((node) => {
+        const position = positions.get(node.id);
+        if (!position || (position.x === node.x && position.y === node.y)) {
+          return node;
+        }
+        return { ...node, x: position.x, y: position.y };
+      }),
+      graphAnnotations: workspace.graphAnnotations.map((annotation) => {
+        const position = positions.get(annotation.id);
+        if (
+          !position ||
+          (position.x === annotation.x && position.y === annotation.y)
+        ) {
+          return annotation;
+        }
+        return { ...annotation, x: position.x, y: position.y };
+      }),
+    }));
+    flash("节点位置已保存");
+  };
+
+  const deleteNodesById = (ids: string[]) => {
+    if (ids.length === 0) return;
+    const idSet = new Set(ids);
+    commitGraphHistory();
+    updateActiveWorkspace((workspace) => {
+      const removedReferenceCounts = new Map<string, number>();
+      workspace.nodes
+        .filter((node) => idSet.has(node.id))
+        .flatMap((node) => node.assetIds ?? [])
+        .forEach((assetId) =>
+          removedReferenceCounts.set(
+            assetId,
+            (removedReferenceCounts.get(assetId) ?? 0) + 1,
+          ),
+        );
+      return {
+        ...workspace,
+        nodes: workspace.nodes.filter((node) => !idSet.has(node.id)),
+        assets: workspace.assets.map((asset) => ({
+          ...asset,
+          references: Math.max(
+            0,
+            asset.references - (removedReferenceCounts.get(asset.id) ?? 0),
+          ),
+        })),
+        graphAnnotations: workspace.graphAnnotations.filter(
+          (annotation) => !idSet.has(annotation.id),
+        ),
+        relations: workspace.relations.filter(
+          (relation) => !idSet.has(relation.source) && !idSet.has(relation.target),
+        ),
+      };
+    });
+    const remaining = nodes.filter((node) => !idSet.has(node.id));
+    const nextSelected = remaining[0]?.id ?? "";
+    setSelectedNodeId(nextSelected);
+    setSelectedNodeIds(nextSelected ? [nextSelected] : []);
+    setGraphContextMenu(null);
+    flash(`已删除 ${ids.length} 个节点及其关系`);
+  };
+
+  const deleteSelectedNodes = () => deleteNodesById(selectedNodeIds);
+
+  const duplicateSelectedNodes = () => {
+    const sourceNodes = nodes.filter((node) => selectedNodeIds.includes(node.id));
+    if (sourceNodes.length === 0) return;
+    commitGraphHistory();
+    const idMap = new Map(
+      sourceNodes.map((node, index) => [node.id, `${node.id}-copy-${Date.now()}-${index}`]),
+    );
+    const copies = sourceNodes.map((node) => ({
+      ...node,
+      id: idMap.get(node.id)!,
+      title: `${node.title} 副本`,
+      tags: [...node.tags],
+      assetIds: [...(node.assetIds ?? [])],
+      x: node.x + 48,
+      y: node.y + 48,
+    }));
+    const copiedRelations = relations
+      .filter(
+        (relation) => idMap.has(relation.source) && idMap.has(relation.target),
+      )
+      .map((relation, index) => ({
+        ...relation,
+        id: `relation-copy-${Date.now()}-${index}`,
+        source: idMap.get(relation.source)!,
+        target: idMap.get(relation.target)!,
+      }));
+    updateActiveWorkspace((workspace) => ({
+      ...workspace,
+      nodes: [...workspace.nodes, ...copies],
+      relations: [...workspace.relations, ...copiedRelations],
+      assets: workspace.assets.map((asset) => ({
+        ...asset,
+        references:
+          asset.references +
+          copies.filter((node) => node.assetIds?.includes(asset.id)).length,
+      })),
+    }));
+    const copyIds = copies.map((node) => node.id);
+    setSelectedNodeIds(copyIds);
+    setSelectedNodeId(copyIds.at(-1) ?? "");
+    setGraphContextMenu(null);
+    flash(`已复制 ${copies.length} 个节点`);
+  };
+
+  const disconnectSelectedNodes = () => {
+    if (selectedNodeIds.length === 0) return;
+    const idSet = new Set(selectedNodeIds);
+    commitGraphHistory();
+    updateActiveWorkspace((workspace) => ({
+      ...workspace,
+      relations: workspace.relations.filter(
+        (relation) => !idSet.has(relation.source) && !idSet.has(relation.target),
+      ),
+    }));
+    setGraphContextMenu(null);
+    flash("已断开所选节点的全部关系");
+  };
+
+  const alignSelectedGraphItems = () => {
+    const selected = flowNodesRef.current.filter((node) => node.selected);
+    if (selected.length < 2) {
+      flash("请先选择至少两个图谱对象");
+      return;
+    }
+    commitGraphHistory();
+    const top = Math.min(...selected.map((node) => node.position.y));
+    const selectedIds = new Set(selected.map((node) => node.id));
+    const next = flowNodesRef.current.map((node) =>
+      selectedIds.has(node.id)
+        ? { ...node, position: { ...node.position, y: top } }
+        : node,
+    );
+    flowNodesRef.current = next;
+    setFlowNodes(next);
+
+    updateActiveWorkspace((workspace) => ({
+      ...workspace,
+      nodes: workspace.nodes.map((node) =>
+        selectedIds.has(node.id) ? { ...node, y: top } : node,
+      ),
+      graphAnnotations: workspace.graphAnnotations.map((annotation) =>
+        selectedIds.has(annotation.id)
+          ? { ...annotation, y: top }
+          : annotation,
+      ),
+    }));
+    flash(`已顶部对齐 ${selected.length} 个对象`);
+  };
+
+  const createGraphAnnotation = () => {
+    const selected = flowNodesRef.current.filter(
+      (node): node is KnowledgeFlowNode =>
+        Boolean(node.selected) && node.type === "knowledge",
+    );
+    if (selected.length === 0) {
+      flash("请先框选需要备注的节点");
+      return;
+    }
+    commitGraphHistory();
+    const left = Math.min(...selected.map((node) => node.position.x));
+    const top = Math.min(...selected.map((node) => node.position.y));
+    const right = Math.max(
+      ...selected.map(
+        (node) => node.position.x + (node.measured?.width ?? 214),
+      ),
+    );
+    const bottom = Math.max(
+      ...selected.map(
+        (node) => node.position.y + (node.measured?.height ?? 142),
+      ),
+    );
+    const annotation: GraphAnnotation = {
+      id: `graph-annotation-${Date.now()}`,
+      title: "研究备注",
+      nodeIds: selected.map((node) => node.id),
+      x: left - 32,
+      y: top - 56,
+      width: right - left + 64,
+      height: bottom - top + 88,
+    };
+    updateActiveWorkspace((workspace) => ({
+      ...workspace,
+      graphAnnotations: [annotation, ...workspace.graphAnnotations],
+    }));
+    setSelectedNodeId(annotation.id);
+    setSelectedNodeIds([annotation.id]);
+    flash(`已为 ${selected.length} 个节点创建备注框`);
+  };
+
+  const createConnectedNode = (kind: NodeKind) => {
+    if (!connectionPicker) return;
+    commitGraphHistory();
+    const id = `node-${crypto.randomUUID()}`;
+    const label = kindMeta[kind].label;
+    const created: KnowledgeNode = {
+      id,
+      kind,
+      title: `未命名${label}节点`,
+      subtitle: "牵线创建",
+      period: "待考",
+      summary: `由关联节点牵线创建的${label}对象。`,
+      tags: ["待整理"],
+      assetCount: 0,
+      assetIds: [],
+      x: connectionPicker.flowX,
+      y: connectionPicker.flowY,
+    };
+    const relation: Relation = {
+      id: `relation-${crypto.randomUUID()}`,
+      source: connectionPicker.sourceNodeId,
+      target: id,
+      type: "关联",
+      evidence: "画布牵线创建",
+    };
+    updateActiveWorkspace((workspace) => ({
+      ...workspace,
+      nodes: [...workspace.nodes, created],
+      relations: [...workspace.relations, relation],
+    }));
+    setSelectedNodeId(id);
+    setSelectedNodeIds([id]);
+    setConnectionPicker(null);
+    flash(`已创建并连接${label}节点`);
+  };
+
+  const onConnect = (connection: Connection) => {
+    if (!connection.source || !connection.target || connection.source === connection.target) return;
+    if (
+      relations.some(
+        (relation) =>
+          relation.source === connection.source && relation.target === connection.target,
+      )
+    ) {
+      return;
+    }
+    commitGraphHistory();
+    updateActiveWorkspace((workspace) => ({
+      ...workspace,
+      relations: [
+        ...workspace.relations,
+        {
+          id: `relation-${Date.now()}`,
+          source: connection.source!,
+          target: connection.target!,
+          type: "关联",
+          evidence: "画布连接",
+        },
+      ],
+    }));
+    flash("已建立节点关系");
+  };
+
+  const onConnectEnd = (
+    event: MouseEvent | TouchEvent,
+    state: FinalConnectionState,
+  ) => {
+    if (state.isValid || !state.fromNode || !flowInstance.current) return;
+    const pointer =
+      "clientX" in event
+        ? { x: event.clientX, y: event.clientY }
+        : {
+            x: event.changedTouches[0]?.clientX ?? 0,
+            y: event.changedTouches[0]?.clientY ?? 0,
+          };
+    const flowPosition = flowInstance.current.screenToFlowPosition(pointer);
+    setConnectionPicker({
+      sourceNodeId: state.fromNode.id,
+      x: pointer.x,
+      y: pointer.y,
+      flowX: flowPosition.x - 90,
+      flowY: flowPosition.y - 55,
+    });
+  };
+
+  const onNodeContextMenu = (
+    event: ReactMouseEvent,
+    node: StudioFlowNode,
+  ) => {
+    event.preventDefault();
+    if (!selectedNodeIds.includes(node.id)) {
+      setSelectedNodeId(node.id);
+      setSelectedNodeIds([node.id]);
+    }
+    setGraphContextMenu({ x: event.clientX, y: event.clientY, nodeId: node.id });
+  };
+
+  const onPaneContextMenu = (event: ReactMouseEvent) => {
+    event.preventDefault();
+    setGraphContextMenu({ x: event.clientX, y: event.clientY, nodeId: null });
+  };
+
+  useEffect(() => {
+    if (section !== "graph") return;
+    const onGraphKeyDown = (event: KeyboardEvent) => {
+      const target = event.target;
+      if (
+        target instanceof HTMLElement &&
+        (target.isContentEditable ||
+          ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName))
+      ) {
+        return;
+      }
+      const ctrl = event.ctrlKey || event.metaKey;
+      const key = event.key.toLowerCase();
+
+      if (ctrl && key === "a") {
+        event.preventDefault();
+        const ids = visibleNodes.map((node) => node.id);
+        setSelectedNodeIds(ids);
+        setSelectedNodeId(ids.at(-1) ?? "");
+        return;
+      }
+      if (ctrl && key === "d") {
+        event.preventDefault();
+        duplicateSelectedNodes();
+        return;
+      }
+      if (ctrl && key === "z" && !event.shiftKey) {
+        event.preventDefault();
+        undoGraph();
+        return;
+      }
+      if ((ctrl && key === "y") || (ctrl && key === "z" && event.shiftKey)) {
+        event.preventDefault();
+        redoGraph();
+        return;
+      }
+      if (key === "q" && !ctrl) {
+        event.preventDefault();
+        alignSelectedGraphItems();
+        return;
+      }
+      if (key === "c" && !ctrl) {
+        event.preventDefault();
+        createGraphAnnotation();
+        return;
+      }
+      if (event.key === "Delete" || event.key === "Backspace") {
+        event.preventDefault();
+        deleteSelectedNodes();
+      }
+    };
+    window.addEventListener("keydown", onGraphKeyDown);
+    return () => window.removeEventListener("keydown", onGraphKeyDown);
+  }, [section, selectedNodeIds, visibleNodes, nodes, relations, activeWorkspaceId]);
+
   if (explorer) {
     return (
       <ExplorerView
         sceneIndex={activeScene}
+        scenes={scenes}
+        topicTitle={`${activeTopic?.title ?? activeWorkspace.name} · ${activeTopic?.description ?? "数字专题"}`}
         onSceneChange={setActiveScene}
         onExit={() => setExplorer(false)}
       />
@@ -581,9 +1920,33 @@ export default function Home() {
 
         <div className="workspace-switcher">
           <span>工作区</span>
-          <button type="button">
-            大三巴高地研究 <span>⌄</span>
+          <button
+            type="button"
+            aria-label="切换工作区"
+            aria-expanded={workspaceMenuOpen}
+            onClick={() => setWorkspaceMenuOpen((open) => !open)}
+          >
+            {activeWorkspace.name} <span>{workspaceMenuOpen ? "⌃" : "⌄"}</span>
           </button>
+          {workspaceMenuOpen && (
+            <div className="workspace-menu">
+              <div className="workspace-menu-title">本地工作区</div>
+              {workspaces.map((workspace) => (
+                <button
+                  type="button"
+                  key={workspace.id}
+                  className={workspace.id === activeWorkspaceId ? "active" : ""}
+                  onClick={() => switchWorkspace(workspace)}
+                >
+                  <span>{workspace.name}</span>
+                  {workspace.id === activeWorkspaceId && <i>当前</i>}
+                </button>
+              ))}
+              <button type="button" className="workspace-menu-create" onClick={openWorkspaceDialog}>
+                ＋ 新建工作区
+              </button>
+            </div>
+          )}
         </div>
 
         <nav className="mode-tabs" aria-label="工作模式">
@@ -592,6 +1955,8 @@ export default function Home() {
               type="button"
               key={item.id}
               className={section === item.id ? "active" : ""}
+              disabled={item.disabled}
+              title={item.disabled ? `${item.label} 功能完善中` : undefined}
               onClick={() => setSection(item.id)}
             >
               {item.label}
@@ -603,16 +1968,30 @@ export default function Home() {
           <span className="save-state">
             <i /> {notice}
           </span>
-          <button className="button-quiet" type="button" onClick={() => flash("版本快照已保存")}>
+          <button className="button-quiet" type="button" onClick={saveWorkspaceVersion}>
             保存版本
           </button>
-          <button className="button-primary" type="button" onClick={() => setExplorer(true)}>
+          <button className="button-quiet" type="button" onClick={() => setVersionsOpen(true)}>
+            版本记录
+          </button>
+          <button
+            className="button-primary"
+            type="button"
+            onClick={() => {
+              setActiveTopicId(topics[0]?.id ?? "");
+              setExplorer(true);
+            }}
+          >
             <span>▶</span> Explorer
           </button>
         </div>
       </header>
 
-      <div className={`studio-body ${sidebarCollapsed ? "sidebar-collapsed" : ""}`}>
+      <div
+        className={`studio-body ${sidebarCollapsed ? "sidebar-collapsed" : ""} ${
+          inspectorOpen && section !== "boards" ? "" : "inspector-hidden"
+        }`}
+      >
         <aside className="studio-sidebar">
           <div className="sidebar-heading">
             <div>
@@ -632,7 +2011,17 @@ export default function Home() {
 
               <div className="node-type-list">
                 {(Object.keys(kindMeta) as NodeKind[]).map((kind) => (
-                  <button type="button" key={kind}>
+                  <button
+                    type="button"
+                    key={kind}
+                    className={nodeKindFilter === kind ? "active" : ""}
+                    onClick={() => {
+                      setNodeKindFilter((current) =>
+                        current === kind ? "all" : kind,
+                      );
+                      setSection("graph");
+                    }}
+                  >
                     <span
                       className="node-type-mark"
                       style={{ "--node-color": kindMeta[kind].color } as CSSProperties}
@@ -645,33 +2034,39 @@ export default function Home() {
                 ))}
               </div>
 
-              <div className="sidebar-section">
+              <div
+                className="sidebar-section disabled"
+                aria-disabled="true"
+                title="专题功能完善中"
+              >
                 <div className="sidebar-section-title">
                   <span>专题</span>
-                  <button type="button">＋</button>
+                  <button type="button" aria-label="新建专题" disabled>＋</button>
                 </div>
-                <button className="topic-link active" type="button">
-                  <span className="topic-dot rust" />
-                  大三巴高地
-                  <small>52</small>
-                </button>
-                <button className="topic-link" type="button">
-                  <span className="topic-dot green" />
-                  澳门历史城区
-                  <small>84</small>
-                </button>
-                <button className="topic-link" type="button">
-                  <span className="topic-dot blue" />
-                  殖民空间研究
-                  <small>19</small>
-                </button>
+                {topics.slice(0, 5).map((topic, index) => (
+                  <button
+                    className={`topic-link ${index === 0 ? "active" : ""}`}
+                    type="button"
+                    key={topic.id}
+                    disabled
+                  >
+                    <span className={`topic-dot ${index % 3 === 0 ? "rust" : index % 3 === 1 ? "green" : "blue"}`} />
+                    {topic.title}
+                    <small>{topic.nodeCount}</small>
+                  </button>
+                ))}
+                {topics.length === 0 && (
+                  <button className="topic-link empty" type="button" disabled>
+                    ＋ 创建第一个专题
+                  </button>
+                )}
               </div>
 
               <div className="sidebar-sync">
                 <span className="sync-icon">↻</span>
                 <div>
-                  <strong>云盘同步正常</strong>
-                  <small>刚刚检测到外部更新</small>
+                  <strong>本机数据已连接</strong>
+                  <small>资源文件保留在当前设备</small>
                 </div>
               </div>
             </>
@@ -681,7 +2076,7 @@ export default function Home() {
         <section className="workspace-main">
           <div className="workspace-toolbar">
             <div className="breadcrumb">
-              <span>大三巴高地研究</span>
+              <span>{activeWorkspace.name}</span>
               <b>/</b>
               <strong>{sectionMeta.find((item) => item.id === section)?.label}</strong>
             </div>
@@ -697,12 +2092,45 @@ export default function Home() {
             </label>
 
             <div className="toolbar-actions">
-              <button type="button">筛选</button>
-              <button type="button">排序</button>
-              <button type="button" className="active">
+              <select
+                aria-label="筛选节点类型"
+                value={nodeKindFilter}
+                onChange={(event) =>
+                  setNodeKindFilter(event.target.value as NodeKind | "all")
+                }
+              >
+                <option value="all">全部类型</option>
+                {(Object.keys(kindMeta) as NodeKind[]).map((kind) => (
+                  <option value={kind} key={kind}>
+                    {kindMeta[kind].label}
+                  </option>
+                ))}
+              </select>
+              <select
+                aria-label="节点排序"
+                value={nodeSort}
+                onChange={(event) =>
+                  setNodeSort(event.target.value as "manual" | "title" | "kind")
+                }
+              >
+                <option value="manual">画布顺序</option>
+                <option value="title">按标题</option>
+                <option value="kind">按类型</option>
+              </select>
+              <button
+                type="button"
+                className={section === "graph" ? "active" : ""}
+                onClick={() => setSection("graph")}
+              >
                 图谱
               </button>
-              <button type="button">列表</button>
+              <button
+                type="button"
+                className={section === "nodes" ? "active" : ""}
+                onClick={() => setSection("nodes")}
+              >
+                列表
+              </button>
             </div>
           </div>
 
@@ -712,85 +2140,199 @@ export default function Home() {
                 <div className="graph-intro">
                   <div>
                     <span>专题知识图谱</span>
-                    <h1>大三巴高地</h1>
+                    <h1>{topics[0]?.title ?? activeWorkspace.name}</h1>
                   </div>
-                  <p>
-                    {visibleNodes.length} 个可见节点 · {relations.length} 条关系
-                  </p>
+                  <div className="graph-intro-actions">
+                    <p>
+                      {visibleNodes.length} 个可见节点 · {relations.length} 条关系 · 滚轮缩放
+                    </p>
+                    <button type="button" onClick={() => setInspectorOpen((open) => !open)}>
+                      {inspectorOpen ? "隐藏属性" : "显示属性"}
+                    </button>
+                  </div>
                 </div>
 
                 <div className="graph-canvas">
-                  <div className="canvas-grid" />
+                  <ReactFlowCanvas
+                    nodes={flowNodes}
+                    edges={flowEdges}
+                    nodeTypes={graphNodeTypes}
+                    onInit={(instance) => {
+                      flowInstance.current =
+                        instance as unknown as ReactFlowInstance<
+                          StudioFlowNode,
+                          FlowEdge
+                        >;
+                    }}
+                    onNodesChange={
+                      onFlowNodesChange as OnNodesChange<FlowNode>
+                    }
+                    onConnect={onConnect}
+                    onConnectEnd={onConnectEnd}
+                    onDragOver={(event) => {
+                      if (
+                        event.dataTransfer.types.includes("application/x-ins-asset") ||
+                        event.dataTransfer.types.includes("Files")
+                      ) {
+                        event.preventDefault();
+                        event.dataTransfer.dropEffect = "copy";
+                      }
+                    }}
+                    onDrop={(event) => {
+                      const assetId = event.dataTransfer.getData("application/x-ins-asset");
+                      const target = document
+                        .elementFromPoint(event.clientX, event.clientY)
+                        ?.closest<HTMLElement>("[data-node-id]");
+                      const nodeId = target?.dataset.nodeId;
+                      if (!nodeId) return;
+                      event.preventDefault();
+                      if (assetId) {
+                        attachAssetToNode(nodeId, assetId);
+                        return;
+                      }
+                      void importFilesIntoNode(
+                        nodeId,
+                        Array.from(event.dataTransfer.files),
+                      );
+                    }}
+                    onNodeClick={(event, node) => {
+                      setSelectedNodeId(node.id);
+                      if (!event.shiftKey && !event.ctrlKey && !event.metaKey) {
+                        setSelectedNodeIds([node.id]);
+                      }
+                      setGraphContextMenu(null);
+                      setConnectionPicker(null);
+                      if (node.type === "knowledge") setInspectorOpen(true);
+                    }}
+                    onPaneClick={() => {
+                      setSelectedNodeId("");
+                      setSelectedNodeIds([]);
+                      setGraphContextMenu(null);
+                      setConnectionPicker(null);
+                    }}
+                    onNodeContextMenu={(event, node) =>
+                      onNodeContextMenu(
+                        event as ReactMouseEvent,
+                        node as StudioFlowNode,
+                      )
+                    }
+                    onPaneContextMenu={(event) =>
+                      onPaneContextMenu(event as ReactMouseEvent)
+                    }
+                    onNodeDragStart={() => {
+                      nodeDragActive.current = true;
+                      commitGraphHistory();
+                    }}
+                    onNodeDragStop={persistFlowPositions}
+                    fitView
+                    fitViewOptions={{ padding: 0.22, maxZoom: 1.1 }}
+                    minZoom={0.25}
+                    maxZoom={2.5}
+                    zoomOnScroll
+                    zoomOnPinch
+                    panOnScroll={false}
+                    selectionOnDrag
+                    selectionMode={SelectionMode.Partial}
+                    panOnDrag={[1, 2]}
+                    panActivationKeyCode="Space"
+                    multiSelectionKeyCode={["Shift", "Meta", "Control"]}
+                    deleteKeyCode={null}
+                    nodesConnectable
+                    connectionRadius={30}
+                    proOptions={{ hideAttribution: true }}
+                  >
+                    <Background gap={18} size={1} color="#cbc7bc" />
+                    <Controls
+                      position="bottom-right"
+                      showInteractive={false}
+                      aria-label="图谱缩放与视图控制"
+                    />
+                    <MiniMap
+                      position="bottom-left"
+                      pannable
+                      zoomable
+                      nodeColor={(node) =>
+                        node.type === "graphAnnotation"
+                          ? "#c8b98e"
+                          : kindMeta[
+                              (node.data as KnowledgeFlowNode["data"]).node.kind
+                            ].color
+                      }
+                      nodeStrokeColor="#171714"
+                      maskColor="rgba(247, 245, 239, 0.76)"
+                      ariaLabel="图谱缩略图：点击或拖动可移动视口"
+                    />
 
-                  {relations.map((relation) => {
-                    const source = nodes.find((node) => node.id === relation.source);
-                    const target = nodes.find((node) => node.id === relation.target);
-                    if (!source || !target) return null;
-                    if (!visibleNodes.includes(source) || !visibleNodes.includes(target)) return null;
-                    const sourceX = source.x + 94;
-                    const sourceY = source.y + 52;
-                    const targetX = target.x + 94;
-                    const targetY = target.y + 52;
-                    const deltaX = targetX - sourceX;
-                    const deltaY = targetY - sourceY;
-                    const width = Math.sqrt(deltaX * deltaX + deltaY * deltaY);
-                    const angle = Math.atan2(deltaY, deltaX) * (180 / Math.PI);
-                    return (
-                      <div key={relation.id}>
-                        <div
-                          className="graph-edge"
-                          style={{
-                            left: sourceX,
-                            top: sourceY,
-                            width,
-                            transform: `rotate(${angle}deg)`,
-                          }}
-                        />
-                        <span
-                          className="edge-label"
-                          style={{
-                            left: sourceX + deltaX / 2,
-                            top: sourceY + deltaY / 2,
-                          }}
-                        >
-                          {relation.type}
-                        </span>
+                    <Panel position="top-left" className="graph-asset-dock">
+                      <div className="graph-asset-dock-heading">
+                        <div>
+                          <span>ASSET DOCK</span>
+                          <strong>拖入节点</strong>
+                        </div>
+                        <button type="button" onClick={() => setSection("assets")}>全部</button>
                       </div>
-                    );
-                  })}
-
-                  {visibleNodes.map((node) => (
-                    <button
-                      type="button"
-                      key={node.id}
-                      className={`knowledge-card ${selectedNodeId === node.id ? "selected" : ""}`}
-                      style={{
-                        left: node.x,
-                        top: node.y,
-                        "--node-color": kindMeta[node.kind].color,
-                      } as CSSProperties}
-                      onClick={() => setSelectedNodeId(node.id)}
-                    >
-                      <div className="knowledge-card-topline">
-                        <span>{kindMeta[node.kind].label.toUpperCase()} NODE</span>
-                        <i>{node.assetCount}</i>
-                      </div>
-                      <strong>{node.title}</strong>
-                      <small>{node.period}</small>
-                      <div className="knowledge-card-tags">
-                        {node.tags.slice(0, 2).map((tag) => (
-                          <span key={tag}>{tag}</span>
+                      <div className="graph-asset-dock-list">
+                        {assets.slice(0, 6).map((asset) => (
+                          <button
+                            type="button"
+                            draggable
+                            className="nodrag nopan"
+                            key={asset.id}
+                            title={`拖动「${asset.name}」到节点`}
+                            onDragStart={(event) => {
+                              event.dataTransfer.setData("application/x-ins-asset", asset.id);
+                              event.dataTransfer.effectAllowed = "copy";
+                            }}
+                            onClick={() => {
+                              if (selectedNodeId) {
+                                attachAssetToNode(selectedNodeId, asset.id);
+                              } else {
+                                flash("请先选择一个节点，再点击或拖入资产");
+                              }
+                            }}
+                          >
+                            <span className={`asset-${asset.kind}`}>{assetGlyph(asset.kind)}</span>
+                            <small>{asset.name}</small>
+                          </button>
                         ))}
                       </div>
-                    </button>
-                  ))}
+                      <p>拖入 Node 成为内容 · 从节点右侧圆点牵线创建对象</p>
+                    </Panel>
 
-                  <div className="canvas-controls">
-                    <button type="button">＋</button>
-                    <button type="button">−</button>
-                    <button type="button">⌂</button>
-                    <span>82%</span>
-                  </div>
+                    {selectedNodeIds.length > 0 && (
+                      <Panel position="top-right" className="graph-selection-toolbar">
+                        <span>{selectedNodeIds.length} 个对象</span>
+                        <button type="button" onClick={alignSelectedGraphItems}>
+                          Q 对齐
+                        </button>
+                        <button type="button" onClick={createGraphAnnotation}>
+                          C 备注
+                        </button>
+                        <button type="button" onClick={duplicateSelectedNodes}>复制</button>
+                        <button
+                          type="button"
+                          onClick={undoGraph}
+                          data-history-version={historyVersion}
+                        >
+                          撤销
+                        </button>
+                        <button type="button" className="danger" onClick={deleteSelectedNodes}>
+                          删除
+                        </button>
+                      </Panel>
+                    )}
+
+                    {nodes.length === 0 && (
+                      <Panel position="top-center" className="graph-empty">
+                        <span>EMPTY GRAPH</span>
+                        <h2>这个工作区还没有节点</h2>
+                        <p>创建第一个 Node，再把图片、文献、模型或视频直接拖进去。</p>
+                        <button type="button" className="button-primary" onClick={createNode}>
+                          ＋ 创建第一个 Node
+                        </button>
+                      </Panel>
+                    )}
+                  </ReactFlowCanvas>
                 </div>
               </div>
             )}
@@ -820,7 +2362,10 @@ export default function Home() {
                       type="button"
                       key={node.id}
                       className={selectedNodeId === node.id ? "selected" : ""}
-                      onClick={() => setSelectedNodeId(node.id)}
+                      onClick={() => {
+                        setSelectedNodeId(node.id);
+                        setSelectedNodeIds([node.id]);
+                      }}
                     >
                       <span className="node-table-name">
                         <i style={{ background: kindMeta[node.kind].color }}>
@@ -847,28 +2392,62 @@ export default function Home() {
                   <div className="asset-tree-panel">
                     <div className="panel-heading">
                       <span>资源目录</span>
-                      <button type="button">＋</button>
+                      <button
+                        type="button"
+                        aria-label="导入资源目录"
+                        onClick={() => directoryInput.current?.click()}
+                      >
+                        ＋
+                      </button>
                     </div>
                     <div className="asset-tree">
-                      <button type="button" className="root active">
+                      <button
+                        type="button"
+                        className={`root ${assetFolderFilter === "all" ? "active" : ""}`}
+                        onClick={() => setAssetFolderFilter("all")}
+                      >
                         <span>▾</span> 📁 Assets <small>{assets.length}</small>
                       </button>
-                      <button type="button">
+                      <button
+                        type="button"
+                        className={assetFolderFilter === "图像档案" ? "active" : ""}
+                        onClick={() => setAssetFolderFilter("图像档案")}
+                      >
                         <span>▾</span> 📁 图像档案
                       </button>
-                      <button type="button" className="nested">
+                      <button
+                        type="button"
+                        className={`nested ${assetFolderFilter === "建筑测绘" ? "active" : ""}`}
+                        onClick={() => setAssetFolderFilter("建筑测绘")}
+                      >
                         <span /> 📁 建筑测绘
                       </button>
-                      <button type="button" className="nested">
+                      <button
+                        type="button"
+                        className={`nested ${assetFolderFilter === "历史图像" ? "active" : ""}`}
+                        onClick={() => setAssetFolderFilter("历史图像")}
+                      >
                         <span /> 📁 历史图像
                       </button>
-                      <button type="button">
+                      <button
+                        type="button"
+                        className={assetFolderFilter === "文献档案" ? "active" : ""}
+                        onClick={() => setAssetFolderFilter("文献档案")}
+                      >
                         <span>›</span> 📁 文献档案
                       </button>
-                      <button type="button">
+                      <button
+                        type="button"
+                        className={assetFolderFilter === "三维模型" ? "active" : ""}
+                        onClick={() => setAssetFolderFilter("三维模型")}
+                      >
                         <span>›</span> 📁 三维模型
                       </button>
-                      <button type="button">
+                      <button
+                        type="button"
+                        className={assetFolderFilter === "田野调查" ? "active" : ""}
+                        onClick={() => setAssetFolderFilter("田野调查")}
+                      >
                         <span>›</span> 📁 田野调查
                       </button>
                     </div>
@@ -903,15 +2482,41 @@ export default function Home() {
                     <div className="panel-heading">
                       <div>
                         <span>全部资源</span>
-                        <small>{assets.length} 项</small>
+                        <small>{filteredAssets.length} 项</small>
                       </div>
                       <div className="panel-heading-actions">
-                        <button type="button">类型 ▾</button>
-                        <button type="button">▦</button>
+                        <select
+                          value={assetKindFilter}
+                          aria-label="筛选资源类型"
+                          onChange={(event) =>
+                            setAssetKindFilter(
+                              event.target.value as AssetItem["kind"] | "all",
+                            )
+                          }
+                        >
+                          <option value="all">全部类型</option>
+                          <option value="image">图片</option>
+                          <option value="document">文献</option>
+                          <option value="model">三维模型</option>
+                          <option value="video">视频</option>
+                          <option value="audio">音频</option>
+                          <option value="text">文字</option>
+                        </select>
+                        <button
+                          type="button"
+                          aria-label="切换资源排列方式"
+                          onClick={() =>
+                            setAssetLayout((layout) =>
+                              layout === "grid" ? "list" : "grid",
+                            )
+                          }
+                        >
+                          {assetLayout === "grid" ? "☷" : "▦"}
+                        </button>
                       </div>
                     </div>
-                    <div className="asset-gallery">
-                      {assets.map((asset) => (
+                    <div className={`asset-gallery ${assetLayout}`}>
+                      {filteredAssets.map((asset) => (
                         <button
                           type="button"
                           key={asset.id}
@@ -919,7 +2524,7 @@ export default function Home() {
                           onClick={() => setSelectedAssetId(asset.id)}
                         >
                           <div className={`asset-thumb asset-${asset.kind}`}>
-                            {asset.previewUrl ? (
+                            {asset.previewUrl && asset.kind === "image" ? (
                               // Local blob URLs are intentionally rendered directly.
                               <img src={asset.previewUrl} alt="" />
                             ) : (
@@ -937,21 +2542,43 @@ export default function Home() {
                   <div className="asset-preview-panel">
                     <div className="panel-heading">
                       <span>资源预览</span>
-                      <button type="button">•••</button>
+                      <button
+                        type="button"
+                        aria-label="下载当前资源"
+                        title="下载当前资源"
+                        onClick={downloadSelectedAsset}
+                      >
+                        ↓
+                      </button>
                     </div>
                     {selectedAsset && (
                       <div className="asset-preview">
                         <div className={`asset-preview-stage asset-${selectedAsset.kind}`}>
-                          {selectedAsset.previewUrl ? (
+                          {selectedAsset.previewUrl &&
+                          selectedAsset.kind === "image" ? (
                             <img src={selectedAsset.previewUrl} alt={selectedAsset.name} />
+                          ) : selectedAsset.previewUrl &&
+                            selectedAsset.kind === "video" ? (
+                            <video src={selectedAsset.previewUrl} controls />
+                          ) : selectedAsset.previewUrl &&
+                            selectedAsset.kind === "model" ? (
+                            <ModelPreview
+                              url={selectedAsset.previewUrl}
+                              fileName={selectedAsset.name}
+                            />
+                          ) : selectedAsset.previewUrl &&
+                            (selectedAsset.kind === "document" ||
+                              selectedAsset.kind === "audio" ||
+                              selectedAsset.kind === "text") ? (
+                            <DocumentMediaPreview
+                              url={selectedAsset.previewUrl}
+                              fileName={selectedAsset.name}
+                            />
                           ) : selectedAsset.kind === "model" ? (
-                            <div className="model-stage">
-                              <div className="model-object">
-                                <span />
-                                <span />
-                                <span />
-                              </div>
-                              <div className="model-axis">X · Y · Z</div>
+                            <div className="model-file-missing">
+                              <span>3D</span>
+                              <strong>示例资源未绑定本机模型文件</strong>
+                              <small>导入 GLB、GLTF、FBX 或 OBJ 后可直接交互预览</small>
                             </div>
                           ) : (
                             <span>{assetGlyph(selectedAsset.kind)}</span>
@@ -975,8 +2602,17 @@ export default function Home() {
                               <dd>本机可用</dd>
                             </div>
                           </dl>
-                          <button type="button" className="button-primary">
-                            关联到 Node
+                          <button
+                            type="button"
+                            className="button-primary"
+                            disabled={!selectedNode}
+                            onClick={() => {
+                              if (!selectedNode || !selectedAsset) return;
+                              attachAssetToNode(selectedNode.id, selectedAsset.id);
+                              setSection("graph");
+                            }}
+                          >
+                            关联到{selectedNode ? `「${selectedNode.title}」` : " Node"}
                           </button>
                         </div>
                       </div>
@@ -986,12 +2622,58 @@ export default function Home() {
               </div>
             )}
 
+            {section === "boards" && (
+              <ReferenceBoardView
+                key={activeWorkspaceId}
+                workspaceId={activeWorkspaceId}
+                workspaceName={activeWorkspace.name}
+                assets={assets}
+                selectedAssetId={selectedAssetId}
+                onSelectAsset={setSelectedAssetId}
+                onHydrateAsset={(assetId, previewUrl) => {
+                  setAssets((current) =>
+                    current.map((asset) =>
+                      asset.id === assetId
+                        ? { ...asset, previewUrl }
+                        : asset,
+                    ),
+                  );
+                }}
+                onCreateAssets={(createdAssets) => {
+                  if (createdAssets.length === 0) return;
+                  setAssets((current) => [
+                    ...createdAssets,
+                    ...current.filter(
+                      (asset) =>
+                        !createdAssets.some(
+                          (created) => created.id === asset.id,
+                        ),
+                    ),
+                  ]);
+                  setSelectedAssetId(createdAssets[0].id);
+                  flash(`已自动创建 ${createdAssets.length} 个资源`);
+                }}
+                onChangeAssetReference={(assetId, delta) => {
+                  setAssets((current) =>
+                    current.map((asset) =>
+                      asset.id === assetId
+                        ? {
+                            ...asset,
+                            references: Math.max(0, asset.references + delta),
+                          }
+                        : asset,
+                    ),
+                  );
+                }}
+              />
+            )}
+
             {section === "narrative" && (
               <div className="narrative-view">
                 <div className="scene-sidebar">
                   <div className="panel-heading">
                     <span>场景</span>
-                    <button type="button">＋</button>
+                    <button type="button" onClick={createScene}>＋</button>
                   </div>
                   {scenes.map((scene, index) => (
                     <button
@@ -1008,7 +2690,7 @@ export default function Home() {
                       <i>⠿</i>
                     </button>
                   ))}
-                  <button className="add-scene" type="button">
+                  <button className="add-scene" type="button" onClick={createScene}>
                     ＋ 添加场景
                   </button>
                 </div>
@@ -1016,11 +2698,11 @@ export default function Home() {
                 <div className="narrative-canvas-wrap">
                   <div className="narrative-toolbar">
                     <div>
-                      <button type="button" className="active">选择</button>
-                      <button type="button">文字</button>
-                      <button type="button">节点</button>
-                      <button type="button">资源</button>
-                      <button type="button">3D</button>
+                      <span className="narrative-tool active">选择</span>
+                      <button type="button" disabled title="自由文字块编排尚未完成">文字</button>
+                      <button type="button" disabled title="节点卡片编排尚未完成">节点</button>
+                      <button type="button" disabled title="资源卡片编排尚未完成">资源</button>
+                      <button type="button" disabled title="三维场景编排尚未完成">3D</button>
                     </div>
                     <span>场景 {scenes[activeScene].index} · 16:9</span>
                     <button type="button" onClick={() => setExplorer(true)}>▶ 预览</button>
@@ -1029,14 +2711,33 @@ export default function Home() {
                     <div className="scene-frame">
                       <div className="scene-frame-grid" />
                       <div className="scene-frame-copy">
-                        <span>{scenes[activeScene].eyebrow}</span>
-                        <h2>{scenes[activeScene].title}</h2>
-                        <p>{scenes[activeScene].description}</p>
+                        <input
+                          aria-label="场景眉题"
+                          value={scenes[activeScene].eyebrow}
+                          onChange={(event) =>
+                            updateActiveScene({ eyebrow: event.target.value })
+                          }
+                        />
+                        <input
+                          className="scene-title-input"
+                          aria-label="场景标题"
+                          value={scenes[activeScene].title}
+                          onChange={(event) =>
+                            updateActiveScene({ title: event.target.value })
+                          }
+                        />
+                        <textarea
+                          aria-label="场景说明"
+                          value={scenes[activeScene].description}
+                          onChange={(event) =>
+                            updateActiveScene({ description: event.target.value })
+                          }
+                        />
                       </div>
                       <div className="scene-node-card">
-                        <span>SPACE NODE</span>
-                        <strong>大三巴高地</strong>
-                        <small>点击进入节点</small>
+                        <span>{selectedNode?.kind.toUpperCase() ?? "NODE"}</span>
+                        <strong>{selectedNode?.title ?? "未选择节点"}</strong>
+                        <small>当前工作区节点引用</small>
                       </div>
                       <div className="selection-outline">
                         <i className="handle-a" />
@@ -1058,47 +2759,71 @@ export default function Home() {
                     <h1>专题</h1>
                     <p>专题组织和呈现已有知识节点，不创建新的数据孤岛。</p>
                   </div>
-                  <button type="button" className="button-primary">＋ 新建专题</button>
+                  <button type="button" className="button-primary" onClick={openTopicDialog}>
+                    ＋ 新建专题
+                  </button>
                 </div>
                 <div className="topic-grid">
-                  <button type="button" className="topic-featured" onClick={() => setExplorer(true)}>
-                    <div className="topic-pattern">
-                      <span>INSCRIPTION · 01</span>
-                      <strong>大三巴高地</strong>
-                      <small>数字铭印研究</small>
-                    </div>
-                    <div className="topic-card-meta">
-                      <span>52 Nodes</span>
-                      <span>4 Narratives</span>
-                      <b>进入 Explorer →</b>
-                    </div>
-                  </button>
-                  <button type="button" className="topic-card">
-                    <span className="topic-index">02</span>
-                    <h3>澳门历史城区</h3>
-                    <p>世界遗产语境中的城市空间与文化记忆。</p>
-                    <small>84 Nodes · 126 Assets</small>
-                  </button>
-                  <button type="button" className="topic-card">
-                    <span className="topic-index">03</span>
-                    <h3>殖民空间研究</h3>
-                    <p>历史城市中权力、宗教与日常实践的空间关系。</p>
-                    <small>19 Nodes · 38 Assets</small>
-                  </button>
+                  {topics.map((topic, index) =>
+                    index === 0 ? (
+                      <button
+                        type="button"
+                        className="topic-featured"
+                        key={topic.id}
+                        onClick={() => {
+                          setActiveTopicId(topic.id);
+                          setExplorer(true);
+                        }}
+                      >
+                        <div className="topic-pattern">
+                          <span>INSCRIPTION · {String(index + 1).padStart(2, "0")}</span>
+                          <strong>{topic.title}</strong>
+                          <small>{topic.description}</small>
+                        </div>
+                        <div className="topic-card-meta">
+                          <span>{topic.nodeCount} Nodes</span>
+                          <span>{scenes.length} Narratives</span>
+                          <b>进入 Explorer →</b>
+                        </div>
+                      </button>
+                    ) : (
+                      <button
+                        type="button"
+                        className="topic-card"
+                        key={topic.id}
+                        onClick={() => {
+                          setActiveTopicId(topic.id);
+                          setExplorer(true);
+                        }}
+                      >
+                        <span className="topic-index">{String(index + 1).padStart(2, "0")}</span>
+                        <h3>{topic.title}</h3>
+                        <p>{topic.description}</p>
+                        <small>{topic.nodeCount} Nodes · {topic.assetCount} Assets</small>
+                      </button>
+                    ),
+                  )}
+                  {topics.length === 0 && (
+                    <button type="button" className="topic-empty" onClick={openTopicDialog}>
+                      <span>EMPTY COLLECTION</span>
+                      <strong>创建第一个专题</strong>
+                      <small>从当前工作区的节点和资源开始编排。</small>
+                    </button>
+                  )}
                 </div>
               </div>
             )}
           </div>
         </section>
 
-        {section !== "assets" && (
+        {section !== "assets" && section !== "boards" && selectedNode && (
           <aside className="inspector-panel">
             <div className="inspector-header">
               <div>
                 <span>NODE INSPECTOR</span>
                 <strong>{kindMeta[selectedNode.kind].label}节点</strong>
               </div>
-              <button type="button">•••</button>
+              <button type="button" aria-label="关闭属性面板" onClick={() => setInspectorOpen(false)}>×</button>
             </div>
 
             <div className="inspector-scroll">
@@ -1121,45 +2846,70 @@ export default function Home() {
               <div className="inspector-section">
                 <div className="inspector-section-title">
                   <span>基本信息</span>
-                  <button type="button">⌃</button>
+                  <button
+                    type="button"
+                    aria-label={basicInfoOpen ? "收起基本信息" : "展开基本信息"}
+                    onClick={() => setBasicInfoOpen((open) => !open)}
+                  >
+                    {basicInfoOpen ? "⌃" : "⌄"}
+                  </button>
                 </div>
-                <label>
-                  <span>副标题</span>
-                  <input
-                    value={selectedNode.subtitle}
-                    onChange={(event) => updateSelectedNode({ subtitle: event.target.value })}
-                  />
-                </label>
-                <label>
-                  <span>时间</span>
-                  <input
-                    value={selectedNode.period}
-                    onChange={(event) => updateSelectedNode({ period: event.target.value })}
-                  />
-                </label>
-                <label>
-                  <span>摘要</span>
-                  <textarea
-                    rows={4}
-                    value={selectedNode.summary}
-                    onChange={(event) => updateSelectedNode({ summary: event.target.value })}
-                  />
-                </label>
-                <div className="tag-field">
-                  <span>标签</span>
-                  <div>
-                    {selectedNode.tags.map((tag) => (
-                      <button type="button" key={tag}>{tag} ×</button>
-                    ))}
-                    <button type="button">＋</button>
-                  </div>
-                </div>
+                {basicInfoOpen && (
+                  <>
+                    <label>
+                      <span>副标题</span>
+                      <input
+                        value={selectedNode.subtitle}
+                        onChange={(event) => updateSelectedNode({ subtitle: event.target.value })}
+                      />
+                    </label>
+                    <label>
+                      <span>时间</span>
+                      <input
+                        value={selectedNode.period}
+                        onChange={(event) => updateSelectedNode({ period: event.target.value })}
+                      />
+                    </label>
+                    <label>
+                      <span>摘要</span>
+                      <textarea
+                        rows={4}
+                        value={selectedNode.summary}
+                        onChange={(event) => updateSelectedNode({ summary: event.target.value })}
+                      />
+                    </label>
+                    <div className="tag-field">
+                      <span>标签</span>
+                      <div>
+                        {selectedNode.tags.map((tag) => (
+                          <button
+                            type="button"
+                            key={tag}
+                            onClick={() => removeSelectedNodeTag(tag)}
+                          >
+                            {tag} ×
+                          </button>
+                        ))}
+                        <button type="button" onClick={addSelectedNodeTag}>＋</button>
+                      </div>
+                    </div>
+                  </>
+                )}
               </div>
 
               <div className="inspector-section">
                 <div className="inspector-section-title">
                   <span>关系</span>
-                  <button type="button">＋</button>
+                  <button
+                    type="button"
+                    aria-label="在图谱中添加关系"
+                    onClick={() => {
+                      setSection("graph");
+                      flash("请从当前节点右侧圆点牵线，连接或创建关联对象");
+                    }}
+                  >
+                    ＋
+                  </button>
                 </div>
                 <div className="relation-list">
                   {relations
@@ -1175,7 +2925,11 @@ export default function Home() {
                         <button
                           type="button"
                           key={relation.id}
-                          onClick={() => peer && setSelectedNodeId(peer.id)}
+                          onClick={() => {
+                            if (!peer) return;
+                            setSelectedNodeId(peer.id);
+                            setSelectedNodeIds([peer.id]);
+                          }}
                         >
                           <span>{relation.type}</span>
                           <strong>{peer?.title}</strong>
@@ -1192,7 +2946,7 @@ export default function Home() {
                   <button type="button" onClick={() => setSection("assets")}>管理</button>
                 </div>
                 <div className="mini-assets">
-                  {initialAssets.slice(0, 3).map((asset) => (
+                  {selectedNodeAssets.map((asset) => (
                     <button type="button" key={asset.id} onClick={() => {
                       setSelectedAssetId(asset.id);
                       setSection("assets");
@@ -1201,20 +2955,303 @@ export default function Home() {
                       <small>{asset.name}</small>
                     </button>
                   ))}
+                  {selectedNodeAssets.length === 0 && (
+                    <button
+                      type="button"
+                      className="mini-assets-empty"
+                      onClick={() => setSection("graph")}
+                    >
+                      <span>＋</span>
+                      <small>从资产坞拖入内容</small>
+                    </button>
+                  )}
                 </div>
               </div>
 
               <div className="inspector-version">
                 <span>最近修订</span>
-                <strong>今天 17:42 · JamLew</strong>
-                <button type="button" onClick={() => flash("已打开 12 条历史修订")}>
-                  查看 12 条历史修订 →
+                <strong>
+                  {versions.find((version) => version.workspaceId === activeWorkspaceId)
+                    ? new Date(
+                        versions.find(
+                          (version) => version.workspaceId === activeWorkspaceId,
+                        )!.createdAt,
+                      ).toLocaleString("zh-CN")
+                    : "尚未保存版本"}
+                </strong>
+                <button type="button" onClick={() => setVersionsOpen(true)}>
+                  查看版本记录 →
                 </button>
               </div>
             </div>
           </aside>
         )}
       </div>
+
+      {graphContextMenu && (
+        <>
+          <button
+            type="button"
+            className="graph-menu-backdrop"
+            aria-label="关闭图谱菜单"
+            onClick={() => setGraphContextMenu(null)}
+          />
+          <div
+            className="graph-context-menu"
+            style={{
+              left: `min(${graphContextMenu.x}px, calc(100vw - 250px))`,
+              top: `min(${graphContextMenu.y}px, calc(100vh - 330px))`,
+            }}
+          >
+            {graphContextMenu.nodeId ? (
+              <>
+                <button type="button" onClick={() => {
+                  setInspectorOpen(true);
+                  setGraphContextMenu(null);
+                }}>
+                  <span>查看全部关联项</span>
+                  <kbd>Enter</kbd>
+                </button>
+                <button type="button" onClick={duplicateSelectedNodes}>
+                  <span>复制节点</span>
+                  <kbd>Ctrl+D</kbd>
+                </button>
+                <button type="button" onClick={disconnectSelectedNodes}>
+                  <span>断开全部关系</span>
+                </button>
+                <i />
+                <button type="button" className="danger" onClick={deleteSelectedNodes}>
+                  <span>删除节点</span>
+                  <kbd>Delete</kbd>
+                </button>
+              </>
+            ) : (
+              <>
+                <button type="button" onClick={() => {
+                  flowInstance.current?.fitView({ padding: 0.22, duration: 240 });
+                  setGraphContextMenu(null);
+                }}>
+                  <span>适应全部节点</span>
+                  <kbd>F</kbd>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    undoGraph();
+                    setGraphContextMenu(null);
+                  }}
+                >
+                  <span>撤销</span>
+                  <kbd>Ctrl+Z</kbd>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    redoGraph();
+                    setGraphContextMenu(null);
+                  }}
+                >
+                  <span>重做</span>
+                  <kbd>Ctrl+Y</kbd>
+                </button>
+              </>
+            )}
+          </div>
+        </>
+      )}
+
+      {connectionPicker && (
+        <>
+          <button
+            type="button"
+            className="graph-menu-backdrop"
+            aria-label="取消创建关联节点"
+            onClick={() => setConnectionPicker(null)}
+          />
+          <div
+            className="connection-node-picker"
+            style={{
+              left: `min(${connectionPicker.x}px, calc(100vw - 290px))`,
+              top: `min(${connectionPicker.y}px, calc(100vh - 360px))`,
+            }}
+          >
+            <div>
+              <span>CREATE CONNECTED NODE</span>
+              <strong>创建并连接</strong>
+              <small>选择新对象的语义类型</small>
+            </div>
+            <section>
+              {(Object.keys(kindMeta) as NodeKind[]).map((kind) => (
+                <button type="button" key={kind} onClick={() => createConnectedNode(kind)}>
+                  <i style={{ background: kindMeta[kind].color }}>
+                    {kindMeta[kind].mark}
+                  </i>
+                  <span>{kindMeta[kind].label}</span>
+                  <small>{kind}</small>
+                </button>
+              ))}
+            </section>
+          </div>
+        </>
+      )}
+
+      {versionsOpen && (
+        <div
+          className="dialog-backdrop"
+          role="presentation"
+          onMouseDown={() => setVersionsOpen(false)}
+        >
+          <section
+            className="studio-dialog version-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="version-dialog-title"
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <div className="dialog-heading">
+              <div>
+                <span>LOCAL VERSION HISTORY</span>
+                <h2 id="version-dialog-title">本机版本记录</h2>
+              </div>
+              <button
+                type="button"
+                aria-label="关闭"
+                onClick={() => setVersionsOpen(false)}
+              >
+                ×
+              </button>
+            </div>
+            <div className="version-list">
+              {versions
+                .filter((version) => version.workspaceId === activeWorkspaceId)
+                .map((version) => (
+                  <article key={version.id}>
+                    <div>
+                      <strong>
+                        {new Date(version.createdAt).toLocaleString("zh-CN")}
+                      </strong>
+                      <small>
+                        {version.snapshot.nodes.length} 个节点 ·{" "}
+                        {version.snapshot.assets.length} 个资源 ·{" "}
+                        {version.snapshot.scenes.length} 个场景
+                      </small>
+                    </div>
+                    <div>
+                      <button
+                        type="button"
+                        onClick={() => restoreWorkspaceVersion(version)}
+                      >
+                        恢复
+                      </button>
+                      <button
+                        type="button"
+                        className="danger"
+                        onClick={() =>
+                          setVersions((current) =>
+                            current.filter((item) => item.id !== version.id),
+                          )
+                        }
+                      >
+                        删除
+                      </button>
+                    </div>
+                  </article>
+                ))}
+              {!versions.some(
+                (version) => version.workspaceId === activeWorkspaceId,
+              ) && (
+                <div className="version-empty">
+                  <strong>还没有手动版本</strong>
+                  <p>点击顶部“保存版本”后，会在本机保留可恢复的工作区快照。</p>
+                </div>
+              )}
+            </div>
+            <div className="dialog-actions">
+              <button
+                type="button"
+                className="button-primary"
+                onClick={saveWorkspaceVersion}
+              >
+                ＋ 保存当前版本
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
+
+      {dialog && (
+        <div className="dialog-backdrop" role="presentation" onMouseDown={() => setDialog(null)}>
+          <section
+            className="studio-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="dialog-title"
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <div className="dialog-heading">
+              <div>
+                <span>{dialog === "workspace" ? "LOCAL WORKSPACE" : "CURATED RESEARCH"}</span>
+                <h2 id="dialog-title">
+                  {dialog === "workspace" ? "新建工作区" : "新建专题"}
+                </h2>
+              </div>
+              <button type="button" aria-label="关闭" onClick={() => setDialog(null)}>×</button>
+            </div>
+
+            {dialog === "workspace" ? (
+              <label className="dialog-field">
+                <span>工作区名称</span>
+                <input
+                  autoFocus
+                  value={workspaceName}
+                  onChange={(event) => setWorkspaceName(event.target.value)}
+                  onKeyDown={(event) => event.key === "Enter" && createWorkspace()}
+                  placeholder="例如：泉州海丝遗产研究"
+                />
+                <small>节点、关系、资源和专题会保存在这个本地工作区中。</small>
+              </label>
+            ) : (
+              <>
+                <label className="dialog-field">
+                  <span>专题名称</span>
+                  <input
+                    autoFocus
+                    value={topicTitle}
+                    onChange={(event) => setTopicTitle(event.target.value)}
+                    placeholder="例如：港口与跨文化交流"
+                  />
+                </label>
+                <label className="dialog-field">
+                  <span>专题说明</span>
+                  <textarea
+                    rows={4}
+                    value={topicDescription}
+                    onChange={(event) => setTopicDescription(event.target.value)}
+                    onKeyDown={(event) => {
+                      if ((event.ctrlKey || event.metaKey) && event.key === "Enter") createTopic();
+                    }}
+                    placeholder="简要说明专题的研究范围和叙事方向"
+                  />
+                </label>
+              </>
+            )}
+
+            <div className="dialog-actions">
+              <button type="button" className="button-quiet" onClick={() => setDialog(null)}>
+                取消
+              </button>
+              <button
+                type="button"
+                className="button-primary"
+                disabled={dialog === "workspace" ? !workspaceName.trim() : !topicTitle.trim()}
+                onClick={dialog === "workspace" ? createWorkspace : createTopic}
+              >
+                {dialog === "workspace" ? "创建工作区" : "创建专题"}
+              </button>
+            </div>
+          </section>
+        </div>
+      )}
     </main>
   );
 }

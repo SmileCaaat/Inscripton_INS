@@ -55,3 +55,112 @@ test("starter preview is fully removed", async () => {
   assert.doesNotMatch(page, /SkeletonPreview/);
   assert.doesNotMatch(layout, /Starter Project/);
 });
+
+test("core workspace interactions are wired", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+
+  assert.match(page, /createWorkspace/);
+  assert.match(page, /switchWorkspace/);
+  assert.match(page, /ReactFlowCanvas/);
+  assert.match(page, /zoomOnScroll/);
+  assert.match(page, /deleteSelectedNodes/);
+  assert.match(page, /application\/x-ins-asset/);
+  assert.match(page, /createConnectedNode/);
+  assert.match(page, /createTopic/);
+  assert.match(page, /inscription-workspaces-v1/);
+  assert.match(page, /data-node-id=/);
+  assert.match(
+    page,
+    /id: "narrative", label: "Narrative", shortcut: "5", disabled: true/,
+  );
+  assert.match(
+    page,
+    /id: "topics", label: "专题", shortcut: "6", disabled: true/,
+  );
+  assert.match(page, /disabled=\{item\.disabled\}/);
+});
+
+test("node dragging stays local to the canvas until drop", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+
+  assert.match(page, /flowNodesRef\.current = next/);
+  assert.match(page, /onNodeDragStop=\{persistFlowPositions\}/);
+  assert.match(page, /position\.x, y: position\.y/);
+  assert.doesNotMatch(page, /ResizeObserver loop completed/);
+});
+
+test("reference board workflow is wired", async () => {
+  const [page, board, localAssets] = await Promise.all([
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/reference-board.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/local-assets.ts", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(page, /label: "参考板"/);
+  assert.match(page, /ReferenceBoardView/);
+  assert.match(board, /application\/x-ins-reference-asset/);
+  assert.match(board, /window\.addEventListener\("paste"/);
+  assert.match(localAssets, /indexedDB\.open/);
+  assert.match(board, /生成切片并放入参考板/);
+  assert.match(board, /宫格分割/);
+  assert.match(board, /自由画框/);
+  assert.match(board, /key === "q"/);
+  assert.match(board, /key === "c"/);
+  assert.match(board, /requestAnimationFrame\(paintPendingHeight\)/);
+  assert.match(board, /setPointerCapture\(pointerId\)/);
+  assert.match(board, /setDockHeight\(pendingHeight\)/);
+  assert.doesNotMatch(
+    board,
+    /const onMove = \(moveEvent: PointerEvent\) => \{\s*setDockHeight\(/,
+  );
+});
+
+test("graph supports Q alignment and C comment frames", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+
+  assert.match(page, /alignSelectedGraphItems/);
+  assert.match(page, /createGraphAnnotation/);
+  assert.match(page, /graphAnnotations/);
+  assert.match(page, /Q 对齐/);
+  assert.match(page, /C 备注/);
+});
+
+test("local assets use a real Three.js model preview", async () => {
+  const [page, viewer, localAssets, packageJson] = await Promise.all([
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/model-preview.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/local-assets.ts", import.meta.url), "utf8"),
+    readFile(new URL("../package.json", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(page, /ModelPreview/);
+  assert.match(viewer, /GLTFLoader/);
+  assert.match(viewer, /FBXLoader/);
+  assert.match(viewer, /OBJLoader/);
+  assert.match(viewer, /OrbitControls/);
+  assert.match(viewer, /AnimationMixer/);
+  assert.match(localAssets, /storeLocalAssetBlob/);
+  assert.match(packageJson, /"three"/);
+});
+
+test("documents, spreadsheets, ebooks, and audio use real local preview engines", async () => {
+  const [viewer, page, board, packageJson] = await Promise.all([
+    readFile(new URL("../app/document-media-preview.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/reference-board.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../package.json", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(viewer, /pdfjs-dist/);
+  assert.match(viewer, /mammoth/);
+  assert.match(viewer, /xlsx/);
+  assert.match(viewer, /epubjs/);
+  assert.match(viewer, /wavesurfer\.js/);
+  assert.match(viewer, /PdfPreview/);
+  assert.match(viewer, /SpreadsheetPreview/);
+  assert.match(viewer, /AudioPreview/);
+  assert.match(page, /DocumentMediaPreview/);
+  assert.match(board, /DocumentMediaPreview/);
+  assert.match(packageJson, /"pdfjs-dist"/);
+  assert.match(packageJson, /"wavesurfer\.js"/);
+});
