@@ -164,3 +164,24 @@ test("documents, spreadsheets, ebooks, and audio use real local preview engines"
   assert.match(packageJson, /"pdfjs-dist"/);
   assert.match(packageJson, /"wavesurfer\.js"/);
 });
+
+test("resources and reference boards use application context menus", async () => {
+  const [page, board, contextMenu] = await Promise.all([
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/reference-board.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/application-context-menu.tsx", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(page, /window\.addEventListener\("contextmenu"/);
+  assert.match(page, /setAssetContextMenu/);
+  assert.match(page, /复制（原地）/);
+  assert.match(page, /在参考板中使用/);
+  assert.match(board, /onNodeContextMenu/);
+  assert.match(board, /onPaneContextMenu/);
+  assert.match(board, /openDockAssetContextMenu/);
+  assert.match(board, /copyBoardSelection/);
+  assert.match(board, /pasteBoardClipboard/);
+  assert.match(board, /disconnectBoardSelection/);
+  assert.match(contextMenu, /createPortal/);
+  assert.match(contextMenu, /role="menu"/);
+});

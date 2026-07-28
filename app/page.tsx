@@ -38,6 +38,10 @@ import {
   type BoardAsset,
 } from "./reference-board";
 import { readLocalAssetBlob, storeLocalAssetBlob } from "./local-assets";
+import {
+  ApplicationContextMenu,
+  type ApplicationContextMenuItem,
+} from "./application-context-menu";
 
 type Section =
   | "nodes"
@@ -153,6 +157,12 @@ type GraphContextMenuState = {
   x: number;
   y: number;
   nodeId: string | null;
+};
+
+type AssetContextMenuState = {
+  x: number;
+  y: number;
+  assetId: string | null;
 };
 
 type GraphConnectionPickerState = {
@@ -504,6 +514,12 @@ function assetGlyph(kind: AssetItem["kind"]) {
   return "IMG";
 }
 
+function duplicateAssetName(name: string) {
+  const dot = name.lastIndexOf(".");
+  if (dot <= 0) return `${name} 副本`;
+  return `${name.slice(0, dot)} 副本${name.slice(dot)}`;
+}
+
 function StudioLogo() {
   return (
     <div className="brand-lockup">
@@ -809,8 +825,15 @@ export default function Home() {
   const [versionsOpen, setVersionsOpen] = useState(false);
   const [versions, setVersions] = useState<WorkspaceVersion[]>([]);
   const [graphContextMenu, setGraphContextMenu] = useState<GraphContextMenuState | null>(null);
+  const [assetContextMenu, setAssetContextMenu] =
+    useState<AssetContextMenuState | null>(null);
+  const [assetClipboardId, setAssetClipboardId] = useState<string | null>(null);
   const [connectionPicker, setConnectionPicker] = useState<GraphConnectionPickerState | null>(null);
   const [historyVersion, setHistoryVersion] = useState(0);
+  const [historyAvailability, setHistoryAvailability] = useState({
+    undo: false,
+    redo: false,
+  });
   const [hydrated, setHydrated] = useState(false);
   const noticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const directoryInput = useRef<HTMLInputElement>(null);
@@ -819,6 +842,14 @@ export default function Home() {
   const historyFuture = useRef<GraphHistoryEntry[]>([]);
   const nodeDragActive = useRef(false);
   const hydratedAssetIds = useRef(new Set<string>());
+
+  const refreshHistoryAvailability = () => {
+    setHistoryAvailability({
+      undo: historyPast.current.length > 0,
+      redo: historyFuture.current.length > 0,
+    });
+    setHistoryVersion((version) => version + 1);
+  };
 
   const activeWorkspace =
     workspaces.find((workspace) => workspace.id === activeWorkspaceId) ?? workspaces[0];
@@ -952,7 +983,7 @@ export default function Home() {
   const commitGraphHistory = () => {
     historyPast.current = [...historyPast.current.slice(-39), createGraphSnapshot()];
     historyFuture.current = [];
-    setHistoryVersion((version) => version + 1);
+    refreshHistoryAvailability();
   };
 
   const restoreGraphSnapshot = (snapshot: GraphHistoryEntry) => {
@@ -987,7 +1018,7 @@ export default function Home() {
     historyPast.current = historyPast.current.slice(0, -1);
     historyFuture.current = [...historyFuture.current, createGraphSnapshot()];
     restoreGraphSnapshot(snapshot);
-    setHistoryVersion((version) => version + 1);
+    refreshHistoryAvailability();
     flash("已撤销图谱操作");
   };
 
@@ -997,7 +1028,7 @@ export default function Home() {
     historyFuture.current = historyFuture.current.slice(0, -1);
     historyPast.current = [...historyPast.current, createGraphSnapshot()];
     restoreGraphSnapshot(snapshot);
-    setHistoryVersion((version) => version + 1);
+    refreshHistoryAvailability();
     flash("已重做图谱操作");
   };
 
@@ -1161,16 +1192,138 @@ export default function Home() {
     flash(`已恢复 ${new Date(version.createdAt).toLocaleString("zh-CN")} 的版本`);
   };
 
-  const downloadSelectedAsset = () => {
-    if (!selectedAsset?.previewUrl) {
+  const downloadAsset = (asset: AssetItem | undefined) => {
+    if (!asset?.previewUrl) {
       flash("该资源只有示例元数据，没有可打开的本机文件");
       return;
     }
     const anchor = document.createElement("a");
-    anchor.href = selectedAsset.previewUrl;
-    anchor.download = selectedAsset.name;
+    anchor.href = asset.previewUrl;
+    anchor.download = asset.name;
     anchor.click();
   };
+
+  const downloadSelectedAsset = () => downloadAsset(selectedAsset);
+
+  const copyAsset = (assetId: string) => {
+    const asset = assets.find((item) => item.id === assetId);
+    if (!asset) return;
+    setAssetClipboardId(assetId);
+    flash(`已复制资源「${asset.name}」`);
+  };
+
+  const duplicateAsset = async (assetId: string) => {
+    const source = assets.find((item) => item.id === assetId);
+    if (!source) return;
+    const id = `asset-copy-${crypto.randomUUID()}`;
+    let previewUrl = source.previewUrl;
+    try {
+      const blob = await readLocalAssetBlob(source.id);
+      if (blob) {
+        await storeLocalAssetBlob(id, blob);
+        previewUrl = URL.createObjectURL(blob);
+      }
+    } catch {
+      // Metadata-only sample assets can still be duplicated.
+    }
+    const duplicated: AssetItem = {
+      ...source,
+      id,
+      name: duplicateAssetName(source.name),
+      references: 0,
+      previewUrl,
+    };
+    commitGraphHistory();
+    setAssets((current) => [duplicated, ...current]);
+    setSelectedAssetId(id);
+    flash(`已创建「${duplicated.name}」`);
+  };
+
+  const renameAsset = (assetId: string) => {
+    const asset = assets.find((item) => item.id === assetId);
+    if (!asset) return;
+    const nextName = window.prompt("重命名资源", asset.name)?.trim();
+    if (!nextName || nextName === asset.name) return;
+    commitGraphHistory();
+    setAssets((current) =>
+      current.map((item) =>
+        item.id === assetId ? { ...item, name: nextName } : item,
+      ),
+    );
+    flash(`已重命名为「${nextName}」`);
+  };
+
+  const deleteAsset = (assetId: string) => {
+    const asset = assets.find((item) => item.id === assetId);
+    if (!asset) return;
+    if (asset.references > 0) {
+      flash(`「${asset.name}」仍有 ${asset.references} 个引用，不能直接删除`);
+      return;
+    }
+    if (!window.confirm(`确定从当前工作区删除资源「${asset.name}」？`)) {
+      return;
+    }
+    commitGraphHistory();
+    const remaining = assets.filter((item) => item.id !== assetId);
+    setAssets(remaining);
+    setSelectedAssetId(remaining[0]?.id ?? "");
+    flash(`已删除资源「${asset.name}」`);
+  };
+
+  useEffect(() => {
+    const preventBrowserContextMenu = (event: MouseEvent) => {
+      event.preventDefault();
+    };
+    window.addEventListener("contextmenu", preventBrowserContextMenu);
+    return () =>
+      window.removeEventListener("contextmenu", preventBrowserContextMenu);
+  }, []);
+
+  useEffect(() => {
+    if (section !== "assets") return;
+    const onAssetKeyDown = (event: KeyboardEvent) => {
+      const target = event.target;
+      if (
+        target instanceof HTMLElement &&
+        (target.isContentEditable ||
+          ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName))
+      ) {
+        return;
+      }
+      const ctrl = event.ctrlKey || event.metaKey;
+      const key = event.key.toLowerCase();
+      if (ctrl && key === "c" && selectedAsset) {
+        event.preventDefault();
+        copyAsset(selectedAsset.id);
+      } else if (ctrl && key === "v" && assetClipboardId) {
+        event.preventDefault();
+        void duplicateAsset(assetClipboardId);
+      } else if (ctrl && key === "d" && selectedAsset) {
+        event.preventDefault();
+        void duplicateAsset(selectedAsset.id);
+      } else if (ctrl && key === "z" && !event.shiftKey) {
+        event.preventDefault();
+        undoGraph();
+      } else if (
+        (ctrl && key === "y") ||
+        (ctrl && key === "z" && event.shiftKey)
+      ) {
+        event.preventDefault();
+        redoGraph();
+      } else if (key === "f2" && selectedAsset) {
+        event.preventDefault();
+        renameAsset(selectedAsset.id);
+      } else if (
+        (event.key === "Delete" || event.key === "Backspace") &&
+        selectedAsset
+      ) {
+        event.preventDefault();
+        deleteAsset(selectedAsset.id);
+      }
+    };
+    window.addEventListener("keydown", onAssetKeyDown);
+    return () => window.removeEventListener("keydown", onAssetKeyDown);
+  }, [assetClipboardId, section, selectedAsset]);
 
   useEffect(() => {
     if (window.innerWidth <= 900) setInspectorOpen(false);
@@ -1293,9 +1446,10 @@ export default function Home() {
     setSelectedNodeIds(firstNodeId ? [firstNodeId] : []);
     setSelectedAssetId(activeWorkspace?.assets[0]?.id ?? "");
     setGraphContextMenu(null);
+    setAssetContextMenu(null);
     historyPast.current = [];
     historyFuture.current = [];
-    setHistoryVersion((version) => version + 1);
+    refreshHistoryAvailability();
   }, [activeWorkspaceId]);
 
   useEffect(() => {
@@ -1305,6 +1459,7 @@ export default function Home() {
         setDialog(null);
         setWorkspaceMenuOpen(false);
         setGraphContextMenu(null);
+        setAssetContextMenu(null);
       }
       if (event.altKey) {
         const target = sectionMeta.find(
@@ -1900,6 +2055,138 @@ export default function Home() {
     window.addEventListener("keydown", onGraphKeyDown);
     return () => window.removeEventListener("keydown", onGraphKeyDown);
   }, [section, selectedNodeIds, visibleNodes, nodes, relations, activeWorkspaceId]);
+
+  const assetMenuTarget = assetContextMenu?.assetId
+    ? assets.find((asset) => asset.id === assetContextMenu.assetId)
+    : undefined;
+  const assetContextMenuItems: ApplicationContextMenuItem[] = assetMenuTarget
+    ? [
+        {
+          id: "preview",
+          label: "预览资源",
+          onSelect: () => setSelectedAssetId(assetMenuTarget.id),
+        },
+        {
+          id: "attach",
+          label: selectedNode
+            ? `关联到「${selectedNode.title}」`
+            : "关联到当前 Node",
+          disabled:
+            !selectedNode ||
+            selectedNode.assetIds?.includes(assetMenuTarget.id),
+          onSelect: () => {
+            if (selectedNode) {
+              attachAssetToNode(selectedNode.id, assetMenuTarget.id);
+            }
+          },
+        },
+        {
+          id: "reference-board",
+          label: "在参考板中使用",
+          onSelect: () => {
+            setSelectedAssetId(assetMenuTarget.id);
+            setSection("boards");
+          },
+        },
+        { id: "asset-separator-1", label: "", separator: true },
+        {
+          id: "copy",
+          label: "复制",
+          shortcut: "Ctrl+C",
+          onSelect: () => copyAsset(assetMenuTarget.id),
+        },
+        {
+          id: "paste",
+          label: "粘贴副本",
+          shortcut: "Ctrl+V",
+          disabled: !assetClipboardId,
+          onSelect: () => {
+            if (assetClipboardId) void duplicateAsset(assetClipboardId);
+          },
+        },
+        {
+          id: "duplicate",
+          label: "复制（原地）",
+          shortcut: "Ctrl+D",
+          onSelect: () => void duplicateAsset(assetMenuTarget.id),
+        },
+        {
+          id: "rename",
+          label: "重命名",
+          shortcut: "F2",
+          onSelect: () => renameAsset(assetMenuTarget.id),
+        },
+        {
+          id: "download",
+          label: "下载原文件",
+          disabled: !assetMenuTarget.previewUrl,
+          onSelect: () => downloadAsset(assetMenuTarget),
+        },
+        { id: "asset-separator-2", label: "", separator: true },
+        {
+          id: "undo",
+          label: "撤销",
+          shortcut: "Ctrl+Z",
+          disabled: !historyAvailability.undo,
+          onSelect: undoGraph,
+        },
+        {
+          id: "redo",
+          label: "重做",
+          shortcut: "Ctrl+Y",
+          disabled: !historyAvailability.redo,
+          onSelect: redoGraph,
+        },
+        { id: "asset-separator-3", label: "", separator: true },
+        {
+          id: "delete",
+          label:
+            assetMenuTarget.references > 0
+              ? `删除（仍有 ${assetMenuTarget.references} 个引用）`
+              : "删除",
+          shortcut: "Delete",
+          disabled: assetMenuTarget.references > 0,
+          danger: true,
+          onSelect: () => deleteAsset(assetMenuTarget.id),
+        },
+      ]
+    : [
+        {
+          id: "import",
+          label: "导入文件或目录",
+          onSelect: () => directoryInput.current?.click(),
+        },
+        {
+          id: "paste",
+          label: "粘贴副本",
+          shortcut: "Ctrl+V",
+          disabled: !assetClipboardId,
+          onSelect: () => {
+            if (assetClipboardId) void duplicateAsset(assetClipboardId);
+          },
+        },
+        {
+          id: "layout",
+          label: assetLayout === "grid" ? "切换为列表排列" : "切换为网格排列",
+          onSelect: () =>
+            setAssetLayout((layout) => (layout === "grid" ? "list" : "grid")),
+        },
+        { id: "asset-separator", label: "", separator: true },
+        {
+          id: "undo",
+          label: "撤销",
+          shortcut: "Ctrl+Z",
+          disabled: !historyAvailability.undo,
+          onSelect: undoGraph,
+        },
+        {
+          id: "redo",
+          label: "重做",
+          shortcut: "Ctrl+Y",
+          disabled: !historyAvailability.redo,
+          onSelect: redoGraph,
+        },
+      ];
 
   if (explorer) {
     return (
@@ -2515,13 +2802,33 @@ export default function Home() {
                         </button>
                       </div>
                     </div>
-                    <div className={`asset-gallery ${assetLayout}`}>
+                    <div
+                      className={`asset-gallery ${assetLayout}`}
+                      onContextMenu={(event) => {
+                        event.preventDefault();
+                        setAssetContextMenu({
+                          x: event.clientX,
+                          y: event.clientY,
+                          assetId: null,
+                        });
+                      }}
+                    >
                       {filteredAssets.map((asset) => (
                         <button
                           type="button"
                           key={asset.id}
                           className={selectedAssetId === asset.id ? "selected" : ""}
                           onClick={() => setSelectedAssetId(asset.id)}
+                          onContextMenu={(event) => {
+                            event.preventDefault();
+                            event.stopPropagation();
+                            setSelectedAssetId(asset.id);
+                            setAssetContextMenu({
+                              x: event.clientX,
+                              y: event.clientY,
+                              assetId: asset.id,
+                            });
+                          }}
                         >
                           <div className={`asset-thumb asset-${asset.kind}`}>
                             {asset.previewUrl && asset.kind === "image" ? (
@@ -2539,7 +2846,18 @@ export default function Home() {
                     </div>
                   </div>
 
-                  <div className="asset-preview-panel">
+                  <div
+                    className="asset-preview-panel"
+                    onContextMenu={(event) => {
+                      event.preventDefault();
+                      if (!selectedAsset) return;
+                      setAssetContextMenu({
+                        x: event.clientX,
+                        y: event.clientY,
+                        assetId: selectedAsset.id,
+                      });
+                    }}
+                  >
                     <div className="panel-heading">
                       <span>资源预览</span>
                       <button
@@ -2987,6 +3305,20 @@ export default function Home() {
           </aside>
         )}
       </div>
+
+      {assetContextMenu && (
+        <ApplicationContextMenu
+          x={assetContextMenu.x}
+          y={assetContextMenu.y}
+          items={assetContextMenuItems}
+          ariaLabel={
+            assetMenuTarget
+              ? `资源「${assetMenuTarget.name}」快捷操作`
+              : "资源目录快捷操作"
+          }
+          onClose={() => setAssetContextMenu(null)}
+        />
+      )}
 
       {graphContextMenu && (
         <>

@@ -3877,6 +3877,72 @@ kbd {
   font-size: 9px;
 }
 
+.application-context-backdrop {
+  position: fixed;
+  z-index: 210;
+  inset: 0;
+  border: 0;
+  background: transparent;
+  cursor: default;
+}
+
+.application-context-menu {
+  width: 238px;
+  max-height: min(430px, calc(100vh - 16px));
+  padding: 6px;
+  position: fixed;
+  z-index: 220;
+  overflow-y: auto;
+  border: 1px solid var(--ink);
+  background: #fbfaf6;
+  box-shadow: 7px 7px 0 rgba(23, 23, 20, 0.18);
+}
+
+.application-context-menu > button {
+  width: 100%;
+  min-height: 32px;
+  padding: 0 8px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  font-size: 9px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.application-context-menu > button:hover {
+  background: #eeeae0;
+}
+
+.application-context-menu > button:disabled {
+  background: transparent;
+  color: #aaa69c;
+  cursor: not-allowed;
+}
+
+.application-context-menu > button.danger {
+  color: #a44132;
+}
+
+.application-context-menu kbd {
+  flex: 0 0 auto;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 7px;
+  font-weight: 500;
+}
+
+.application-context-separator {
+  height: 1px;
+  margin: 5px 2px;
+  background: var(--line);
+}
+
 .graph-menu-backdrop {
   position: fixed;
   z-index: 60;

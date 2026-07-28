@@ -10,6 +10,7 @@ import {
   useState,
   type CSSProperties,
   type DragEvent,
+  type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import {
@@ -31,6 +32,10 @@ import {
 } from "@xyflow/react";
 import dynamic from "next/dynamic";
 import { readLocalAssetBlob, storeLocalAssetBlob } from "./local-assets";
+import {
+  ApplicationContextMenu,
+  type ApplicationContextMenuItem,
+} from "./application-context-menu";
 
 export type BoardAsset = {
   id: string;
@@ -67,6 +72,21 @@ type FreeInteraction =
   | { kind: "draw"; startX: number; startY: number }
   | { kind: "move"; index: number; offsetX: number; offsetY: number }
   | { kind: "resize"; index: number };
+
+type BoardClipboard = {
+  nodes: BoardNode[];
+  edges: Edge[];
+  origin: { x: number; y: number };
+};
+
+type BoardContextMenuState = {
+  x: number;
+  y: number;
+  target: "pane" | "node" | "dock";
+  flowPosition: { x: number; y: number };
+  nodeId?: string;
+  assetId?: string;
+};
 
 type EntryLike = {
   isFile: boolean;
@@ -854,10 +874,15 @@ export function ReferenceBoardView({
   >("all");
   const [previewTab, setPreviewTab] = useState<"preview" | "info">("preview");
   const [splitAsset, setSplitAsset] = useState<BoardAsset | null>(null);
+  const [boardContextMenu, setBoardContextMenu] =
+    useState<BoardContextMenuState | null>(null);
+  const [boardClipboard, setBoardClipboard] =
+    useState<BoardClipboard | null>(null);
   const flowRef = useRef<ReactFlowInstance<BoardNode, Edge> | null>(null);
   const nodesRef = useRef(nodes);
   const pastePointRef = useRef({ x: 340, y: 180 });
   const boardViewRef = useRef<HTMLDivElement>(null);
+  const internalBoardPasteRef = useRef(false);
 
   const boardAssetIds = useMemo(
     () =>
@@ -1044,6 +1069,11 @@ export function ReferenceBoardView({
 
   useEffect(() => {
     const onPaste = (event: ClipboardEvent) => {
+      if (internalBoardPasteRef.current) {
+        internalBoardPasteRef.current = false;
+        event.preventDefault();
+        return;
+      }
       const target = event.target;
       if (
         target instanceof HTMLElement &&
@@ -1122,6 +1152,199 @@ export function ReferenceBoardView({
     });
   }, []);
 
+  const selectAllBoardNodes = () => {
+    setNodes((current) => {
+      const next = current.map((node) => ({ ...node, selected: true }));
+      nodesRef.current = next;
+      return next;
+    });
+  };
+
+  const makeBoardClipboard = (primaryNodeId?: string) => {
+    let selected = nodesRef.current.filter((node) => node.selected);
+    if (
+      primaryNodeId &&
+      !selected.some((node) => node.id === primaryNodeId)
+    ) {
+      const primary = nodesRef.current.find(
+        (node) => node.id === primaryNodeId,
+      );
+      selected = primary ? [primary] : [];
+    }
+    if (selected.length === 0) return null;
+    const selectedIds = new Set(selected.map((node) => node.id));
+    const origin = {
+      x: Math.min(...selected.map((node) => node.position.x)),
+      y: Math.min(...selected.map((node) => node.position.y)),
+    };
+    return {
+      nodes: selected.map(
+        (node) =>
+          ({
+            ...node,
+            position: { ...node.position },
+            selected: false,
+            data:
+              node.type === "boardAsset"
+                ? {
+                    ...node.data,
+                    asset: { ...node.data.asset },
+                    onPreview: onSelectAsset,
+                  }
+                : { ...node.data },
+          }) as BoardNode,
+      ),
+      edges: edges
+        .filter(
+          (edge) =>
+            selectedIds.has(edge.source) && selectedIds.has(edge.target),
+        )
+        .map((edge) => ({ ...edge, selected: false })),
+      origin,
+    } satisfies BoardClipboard;
+  };
+
+  const copyBoardSelection = (primaryNodeId?: string) => {
+    const clipboard = makeBoardClipboard(primaryNodeId);
+    if (clipboard) setBoardClipboard(clipboard);
+    return clipboard;
+  };
+
+  const removeBoardNodes = (nodeIds: Set<string>) => {
+    if (nodeIds.size === 0) {
+      setEdges((current) => current.filter((edge) => !edge.selected));
+      return;
+    }
+    nodesRef.current
+      .filter(
+        (node): node is Node<AssetNodeData, "boardAsset"> =>
+          nodeIds.has(node.id) && node.type === "boardAsset",
+      )
+      .forEach((node) => onChangeAssetReference(node.data.assetId, -1));
+    setNodes((current) => {
+      const next = current.filter((node) => !nodeIds.has(node.id));
+      nodesRef.current = next;
+      return next;
+    });
+    setEdges((current) =>
+      current.filter(
+        (edge) =>
+          !edge.selected &&
+          !nodeIds.has(edge.source) &&
+          !nodeIds.has(edge.target),
+      ),
+    );
+  };
+
+  const deleteBoardSelection = (primaryNodeId?: string) => {
+    const selectedIds = new Set(
+      nodesRef.current
+        .filter(
+          (node) =>
+            node.selected ||
+            (primaryNodeId !== undefined && node.id === primaryNodeId),
+        )
+        .map((node) => node.id),
+    );
+    removeBoardNodes(selectedIds);
+  };
+
+  const pasteBoardClipboard = (
+    clipboard = boardClipboard,
+    position = pastePointRef.current,
+  ) => {
+    if (!clipboard) return;
+    const idMap = new Map<string, string>();
+    const pastedNodes = clipboard.nodes.map((node) => {
+      const id = `board-paste-${crypto.randomUUID()}`;
+      idMap.set(node.id, id);
+      return {
+        ...node,
+        id,
+        position: {
+          x: position.x + node.position.x - clipboard.origin.x,
+          y: position.y + node.position.y - clipboard.origin.y,
+        },
+        selected: true,
+        measured: undefined,
+        data:
+          node.type === "boardAsset"
+            ? {
+                ...node.data,
+                asset: { ...node.data.asset },
+                onPreview: onSelectAsset,
+              }
+            : { ...node.data },
+      } as BoardNode;
+    });
+    pastedNodes
+      .filter(
+        (node): node is Node<AssetNodeData, "boardAsset"> =>
+          node.type === "boardAsset",
+      )
+      .forEach((node) => onChangeAssetReference(node.data.assetId, 1));
+    setNodes((current) => {
+      const next = [
+        ...current.map((node) => ({ ...node, selected: false })),
+        ...pastedNodes,
+      ];
+      nodesRef.current = next;
+      return next;
+    });
+    setEdges((current) => [
+      ...current.map((edge) => ({ ...edge, selected: false })),
+      ...clipboard.edges.flatMap((edge) => {
+        const source = idMap.get(edge.source);
+        const target = idMap.get(edge.target);
+        return source && target
+          ? [
+              {
+                ...edge,
+                id: `board-edge-${crypto.randomUUID()}`,
+                source,
+                target,
+                selected: false,
+              },
+            ]
+          : [];
+      }),
+    ]);
+  };
+
+  const cutBoardSelection = (primaryNodeId?: string) => {
+    const clipboard = copyBoardSelection(primaryNodeId);
+    if (!clipboard) return;
+    removeBoardNodes(new Set(clipboard.nodes.map((node) => node.id)));
+  };
+
+  const duplicateBoardSelection = (primaryNodeId?: string) => {
+    const clipboard = makeBoardClipboard(primaryNodeId);
+    if (!clipboard) return;
+    setBoardClipboard(clipboard);
+    pasteBoardClipboard(clipboard, {
+      x: clipboard.origin.x + 32,
+      y: clipboard.origin.y + 32,
+    });
+  };
+
+  const disconnectBoardSelection = (primaryNodeId?: string) => {
+    const nodeIds = new Set(
+      nodesRef.current
+        .filter(
+          (node) =>
+            node.selected ||
+            (primaryNodeId !== undefined && node.id === primaryNodeId),
+        )
+        .map((node) => node.id),
+    );
+    setEdges((current) =>
+      current.filter(
+        (edge) =>
+          !nodeIds.has(edge.source) && !nodeIds.has(edge.target),
+      ),
+    );
+  };
+
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       const target = event.target;
@@ -1132,8 +1355,28 @@ export function ReferenceBoardView({
       ) {
         return;
       }
+      const ctrl = event.ctrlKey || event.metaKey;
       const key = event.key.toLowerCase();
-      if (key === "q") {
+      if (ctrl && key === "a") {
+        event.preventDefault();
+        selectAllBoardNodes();
+      } else if (ctrl && key === "c") {
+        event.preventDefault();
+        copyBoardSelection();
+      } else if (ctrl && key === "x") {
+        event.preventDefault();
+        cutBoardSelection();
+      } else if (ctrl && key === "v" && boardClipboard) {
+        event.preventDefault();
+        internalBoardPasteRef.current = true;
+        window.setTimeout(() => {
+          internalBoardPasteRef.current = false;
+        }, 0);
+        pasteBoardClipboard();
+      } else if (ctrl && key === "d") {
+        event.preventDefault();
+        duplicateBoardSelection();
+      } else if (key === "q") {
         event.preventDefault();
         alignSelectionTop();
       } else if (key === "c" && !event.ctrlKey && !event.metaKey) {
@@ -1141,32 +1384,7 @@ export function ReferenceBoardView({
         createCommentFrame();
       } else if (event.key === "Delete" || event.key === "Backspace") {
         event.preventDefault();
-        const deletedIds = new Set(
-          nodesRef.current
-            .filter((node) => node.selected)
-            .map((node) => node.id),
-        );
-        nodesRef.current
-          .filter(
-            (node): node is Node<AssetNodeData, "boardAsset"> =>
-              Boolean(node.selected) && node.type === "boardAsset",
-          )
-          .forEach((node) =>
-            onChangeAssetReference(node.data.assetId, -1),
-          );
-        setNodes((current) => {
-          const next = current.filter((node) => !node.selected);
-          nodesRef.current = next;
-          return next;
-        });
-        setEdges((current) =>
-          current.filter(
-            (edge) =>
-              !edge.selected &&
-              !deletedIds.has(edge.source) &&
-              !deletedIds.has(edge.target),
-          ),
-        );
+        deleteBoardSelection();
       }
     };
     window.addEventListener("keydown", onKey);
@@ -1222,13 +1440,81 @@ export function ReferenceBoardView({
     await importFiles(Array.from(event.dataTransfer.files), position);
   };
 
-  const downloadActiveAsset = () => {
-    if (!activeAsset?.previewUrl) return;
+  const openBoardNodeContextMenu = (
+    event: ReactMouseEvent,
+    node: BoardNode,
+  ) => {
+    event.preventDefault();
+    const flowPosition =
+      flowRef.current?.screenToFlowPosition({
+        x: event.clientX,
+        y: event.clientY,
+      }) ?? pastePointRef.current;
+    pastePointRef.current = flowPosition;
+    if (!node.selected) {
+      setNodes((current) => {
+        const next = current.map((item) => ({
+          ...item,
+          selected: item.id === node.id,
+        }));
+        nodesRef.current = next;
+        return next;
+      });
+    }
+    if (node.type === "boardAsset") {
+      onSelectAsset(node.data.assetId);
+    }
+    setBoardContextMenu({
+      x: event.clientX,
+      y: event.clientY,
+      target: "node",
+      nodeId: node.id,
+      assetId: node.type === "boardAsset" ? node.data.assetId : undefined,
+      flowPosition,
+    });
+  };
+
+  const openBoardPaneContextMenu = (event: ReactMouseEvent) => {
+    event.preventDefault();
+    const flowPosition =
+      flowRef.current?.screenToFlowPosition({
+        x: event.clientX,
+        y: event.clientY,
+      }) ?? pastePointRef.current;
+    pastePointRef.current = flowPosition;
+    setBoardContextMenu({
+      x: event.clientX,
+      y: event.clientY,
+      target: "pane",
+      flowPosition,
+    });
+  };
+
+  const openDockAssetContextMenu = (
+    event: ReactMouseEvent,
+    asset: BoardAsset,
+  ) => {
+    event.preventDefault();
+    event.stopPropagation();
+    onSelectAsset(asset.id);
+    setBoardContextMenu({
+      x: event.clientX,
+      y: event.clientY,
+      target: "dock",
+      assetId: asset.id,
+      flowPosition: pastePointRef.current,
+    });
+  };
+
+  const downloadBoardAsset = (asset: BoardAsset | undefined) => {
+    if (!asset?.previewUrl) return;
     const anchor = document.createElement("a");
-    anchor.href = activeAsset.previewUrl;
-    anchor.download = activeAsset.name;
+    anchor.href = asset.previewUrl;
+    anchor.download = asset.name;
     anchor.click();
   };
+
+  const downloadActiveAsset = () => downloadBoardAsset(activeAsset);
 
   const handleSlices = (slices: BoardAsset[]) => {
     const sourceNode = nodesRef.current.find(
@@ -1335,6 +1621,186 @@ export function ReferenceBoardView({
     resizeHandle.addEventListener("lostpointercapture", finishResize);
   };
 
+  const contextNode = boardContextMenu?.nodeId
+    ? nodes.find((node) => node.id === boardContextMenu.nodeId)
+    : undefined;
+  const contextAsset = boardContextMenu?.assetId
+    ? assets.find((asset) => asset.id === boardContextMenu.assetId)
+    : undefined;
+  const contextNodeIds = new Set(
+    nodes
+      .filter(
+        (node) =>
+          node.selected ||
+          (boardContextMenu?.nodeId !== undefined &&
+            node.id === boardContextMenu.nodeId),
+      )
+      .map((node) => node.id),
+  );
+  const selectedAssetNodeCount = nodes.filter(
+    (node) =>
+      contextNodeIds.has(node.id) && node.type === "boardAsset",
+  ).length;
+  const contextHasConnections = edges.some(
+    (edge) =>
+      contextNodeIds.has(edge.source) || contextNodeIds.has(edge.target),
+  );
+  const boardContextMenuItems: ApplicationContextMenuItem[] =
+    boardContextMenu?.target === "dock" && contextAsset
+      ? [
+          {
+            id: "dock-preview",
+            label: "预览资源",
+            onSelect: () => onSelectAsset(contextAsset.id),
+          },
+          {
+            id: "dock-add",
+            label: "添加到参考板",
+            onSelect: () =>
+              addExistingAsset(
+                contextAsset,
+                boardContextMenu.flowPosition,
+              ),
+          },
+          {
+            id: "dock-download",
+            label: "下载原文件",
+            disabled: !contextAsset.previewUrl,
+            onSelect: () => downloadBoardAsset(contextAsset),
+          },
+          {
+            id: "dock-split",
+            label: "图片切图",
+            disabled:
+              contextAsset.kind !== "image" || !contextAsset.previewUrl,
+            onSelect: () => setSplitAsset(contextAsset),
+          },
+        ]
+      : [
+          ...(contextNode
+            ? [
+                {
+                  id: "preview",
+                  label:
+                    contextNode.type === "boardAsset"
+                      ? "预览资源"
+                      : "选择备注框",
+                  disabled: contextNode.type !== "boardAsset",
+                  onSelect: () => {
+                    if (contextNode.type === "boardAsset") {
+                      onSelectAsset(contextNode.data.assetId);
+                    }
+                  },
+                },
+                {
+                  id: "disconnect",
+                  label: "断开当前项",
+                  disabled: !contextHasConnections,
+                  onSelect: () =>
+                    disconnectBoardSelection(contextNode.id),
+                },
+                ...(contextAsset
+                  ? [
+                      {
+                        id: "download",
+                        label: "下载原文件",
+                        disabled: !contextAsset.previewUrl,
+                        onSelect: () => downloadBoardAsset(contextAsset),
+                      },
+                      {
+                        id: "split",
+                        label: "图片切图",
+                        disabled:
+                          contextAsset.kind !== "image" ||
+                          !contextAsset.previewUrl,
+                        onSelect: () => setSplitAsset(contextAsset),
+                      },
+                    ]
+                  : []),
+                {
+                  id: "node-separator",
+                  label: "",
+                  separator: true,
+                },
+              ]
+            : []),
+          {
+            id: "cut",
+            label: "剪切",
+            shortcut: "Ctrl+X",
+            disabled: contextNodeIds.size === 0,
+            onSelect: () =>
+              cutBoardSelection(boardContextMenu?.nodeId),
+          },
+          {
+            id: "copy",
+            label: "复制",
+            shortcut: "Ctrl+C",
+            disabled: contextNodeIds.size === 0,
+            onSelect: () =>
+              copyBoardSelection(boardContextMenu?.nodeId),
+          },
+          {
+            id: "paste",
+            label: "粘贴",
+            shortcut: "Ctrl+V",
+            disabled: !boardClipboard,
+            onSelect: () =>
+              pasteBoardClipboard(
+                boardClipboard,
+                boardContextMenu?.flowPosition,
+              ),
+          },
+          {
+            id: "duplicate",
+            label: "复制（原地）",
+            shortcut: "Ctrl+D",
+            disabled: contextNodeIds.size === 0,
+            onSelect: () =>
+              duplicateBoardSelection(boardContextMenu?.nodeId),
+          },
+          {
+            id: "edit-separator",
+            label: "",
+            separator: true,
+          },
+          {
+            id: "delete",
+            label: "删除",
+            shortcut: "Delete",
+            disabled: contextNodeIds.size === 0,
+            danger: true,
+            onSelect: () =>
+              deleteBoardSelection(boardContextMenu?.nodeId),
+          },
+          {
+            id: "selection-separator",
+            label: "",
+            separator: true,
+          },
+          {
+            id: "select-all",
+            label: "全选",
+            shortcut: "Ctrl+A",
+            disabled: nodes.length === 0,
+            onSelect: selectAllBoardNodes,
+          },
+          {
+            id: "comment",
+            label: "添加备注（包围选区）",
+            shortcut: "C",
+            disabled: selectedAssetNodeCount === 0,
+            onSelect: createCommentFrame,
+          },
+          {
+            id: "align",
+            label: "自动对齐 / 排版",
+            shortcut: "Q",
+            disabled: selectedAssetNodeCount < 2,
+            onSelect: alignSelectionTop,
+          },
+        ];
+
   return (
     <div
       ref={boardViewRef}
@@ -1425,6 +1891,16 @@ export function ReferenceBoardView({
                   );
                 }
               }}
+              onNodeContextMenu={(event, node) =>
+                openBoardNodeContextMenu(
+                  event as ReactMouseEvent,
+                  node as BoardNode,
+                )
+              }
+              onPaneContextMenu={(event) =>
+                openBoardPaneContextMenu(event as ReactMouseEvent)
+              }
+              onPaneClick={() => setBoardContextMenu(null)}
               onDragOver={(event) => {
                 if (
                   event.dataTransfer.types.includes("Files") ||
@@ -1658,6 +2134,9 @@ export function ReferenceBoardView({
                   }}
                   onClick={() => onSelectAsset(asset.id)}
                   onDoubleClick={() => addExistingAsset(asset)}
+                  onContextMenu={(event) =>
+                    openDockAssetContextMenu(event, asset)
+                  }
                 >
                   <div className={`asset-${asset.kind}`}>
                     {asset.previewUrl && asset.kind === "image" ? (
@@ -1679,6 +2158,22 @@ export function ReferenceBoardView({
           </div>
         )}
       </section>
+
+      {boardContextMenu && (
+        <ApplicationContextMenu
+          x={boardContextMenu.x}
+          y={boardContextMenu.y}
+          items={boardContextMenuItems}
+          ariaLabel={
+            boardContextMenu.target === "dock"
+              ? `资源「${contextAsset?.name ?? ""}」快捷操作`
+              : boardContextMenu.target === "node"
+                ? "参考板对象快捷操作"
+                : "参考板画布快捷操作"
+          }
+          onClose={() => setBoardContextMenu(null)}
+        />
+      )}
 
       {splitAsset && splitAsset.previewUrl && (
         <ImageSplitDialog
