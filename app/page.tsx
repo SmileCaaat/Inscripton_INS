@@ -13,17 +13,22 @@ import {
   type DragEvent,
   type InputHTMLAttributes,
   type MouseEvent as ReactMouseEvent,
+  type PointerEvent as ReactPointerEvent,
 } from "react";
 import {
   Background,
+  BaseEdge,
   Controls,
+  EdgeLabelRenderer,
   Handle,
   MiniMap,
   Panel,
   Position,
   SelectionMode,
   applyNodeChanges,
+  getBezierPath,
   type Edge as FlowEdge,
+  type EdgeProps,
   type Connection,
   type FinalConnectionState,
   type Node as FlowNode,
@@ -42,6 +47,15 @@ import {
   ApplicationContextMenu,
   type ApplicationContextMenuItem,
 } from "./application-context-menu";
+import { AssetPreview } from "./asset-preview";
+import {
+  connectWorkspaceDirectory,
+  createWorkspaceDeliveryDirectories,
+  renameWorkspaceAssetFile,
+  supportsWorkspaceDirectoryAccess,
+  workspaceDirectoryIsConnected,
+  writeWorkspaceAssetFile,
+} from "./workspace-files";
 
 type Section =
   | "nodes"
@@ -110,6 +124,16 @@ type GraphAnnotation = {
   height: number;
 };
 
+type DeliveryPackage = {
+  id: string;
+  name: string;
+  sourceAssetId: string;
+  sourceCopyAssetId: string;
+  path: string;
+  createdAt: string;
+  physicalDirectory: boolean;
+};
+
 type WorkspaceRecord = {
   id: string;
   name: string;
@@ -119,6 +143,7 @@ type WorkspaceRecord = {
   scenes: NarrativeScene[];
   topics: TopicRecord[];
   graphAnnotations: GraphAnnotation[];
+  deliveryPackages: DeliveryPackage[];
 };
 
 type WorkspaceVersion = {
@@ -145,12 +170,28 @@ type GraphAnnotationFlowNode = FlowNode<
 
 type StudioFlowNode = KnowledgeFlowNode | GraphAnnotationFlowNode;
 
+type EditableRelationEdgeData = Record<string, unknown> & {
+  label: string;
+  draft: string;
+  editing: boolean;
+  onBeginEdit: (relationId: string) => void;
+  onDraftChange: (value: string) => void;
+  onCommit: (relationId: string, value: string) => void;
+  onCancel: () => void;
+};
+
+type EditableRelationFlowEdge = FlowEdge<
+  EditableRelationEdgeData,
+  "editableRelation"
+>;
+
 type GraphHistoryEntry = {
   workspaceId: string;
   nodes: KnowledgeNode[];
   relations: Relation[];
   assets: AssetItem[];
   graphAnnotations: GraphAnnotation[];
+  deliveryPackages: DeliveryPackage[];
 };
 
 type GraphContextMenuState = {
@@ -183,6 +224,11 @@ type EntryLike = {
   };
 };
 
+const ASSET_PREVIEW_DEFAULT_WIDTH = 420;
+const ASSET_PREVIEW_MIN_WIDTH = 300;
+const ASSET_GALLERY_MIN_WIDTH = 320;
+const ASSET_PANEL_DIVIDER_WIDTH = 7;
+
 const kindMeta: Record<NodeKind, { label: string; mark: string; color: string }> = {
   Space: { label: "空间", mark: "S", color: "#315c4b" },
   Person: { label: "人物", mark: "P", color: "#7f3f2e" },
@@ -199,10 +245,10 @@ const sectionMeta: Array<{
   shortcut: string;
   disabled?: boolean;
 }> = [
-  { id: "nodes", label: "节点", shortcut: "1" },
-  { id: "graph", label: "图谱", shortcut: "2" },
-  { id: "assets", label: "资源", shortcut: "3" },
-  { id: "boards", label: "参考板", shortcut: "4" },
+  { id: "assets", label: "资源", shortcut: "1" },
+  { id: "boards", label: "参考板", shortcut: "2" },
+  { id: "nodes", label: "节点", shortcut: "3" },
+  { id: "graph", label: "图谱", shortcut: "4" },
   { id: "narrative", label: "Narrative", shortcut: "5", disabled: true },
   { id: "topics", label: "专题", shortcut: "6", disabled: true },
 ];
@@ -455,6 +501,7 @@ function createInitialWorkspace(): WorkspaceRecord {
     scenes: initialScenes.map((scene) => ({ ...scene })),
     topics: initialTopics.map((topic) => ({ ...topic })),
     graphAnnotations: [],
+    deliveryPackages: [],
   };
 }
 
@@ -521,10 +568,15 @@ function duplicateAssetName(name: string) {
 }
 
 function StudioLogo() {
+  const logoSrc =
+    typeof window !== "undefined" && window.location.protocol === "file:"
+      ? "./ins-logo.png"
+      : "/ins-logo.png";
+
   return (
     <div className="brand-lockup">
       <div className="brand-logo-frame">
-        <img className="brand-logo-image" src="/ins-logo.png" alt="INS" />
+        <img className="brand-logo-image" src={logoSrc} alt="INS" />
       </div>
       <div>
         <strong>Inscription</strong>
@@ -615,9 +667,111 @@ const GraphAnnotationNode = memo(function GraphAnnotationNode({
   );
 });
 
+const EditableRelationEdge = memo(function EditableRelationEdge({
+  id,
+  sourceX,
+  sourceY,
+  targetX,
+  targetY,
+  sourcePosition,
+  targetPosition,
+  markerStart,
+  markerEnd,
+  style,
+  data,
+}: EdgeProps<EditableRelationFlowEdge>) {
+  const cancellingRef = useRef(false);
+  const [edgePath, labelX, labelY] = getBezierPath({
+    sourceX,
+    sourceY,
+    targetX,
+    targetY,
+    sourcePosition,
+    targetPosition,
+  });
+
+  if (!data) return null;
+
+  return (
+    <>
+      <BaseEdge
+        id={id}
+        path={edgePath}
+        markerStart={markerStart}
+        markerEnd={markerEnd}
+        style={style}
+        interactionWidth={28}
+      />
+      <EdgeLabelRenderer>
+        <div
+          className={`editable-relation-label nodrag nopan ${
+            data.editing ? "editing" : ""
+          }`}
+          style={{
+            transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)`,
+          }}
+          onPointerDown={(event) => event.stopPropagation()}
+        >
+          {data.editing ? (
+            <input
+              autoFocus
+              aria-label="编辑关系文字"
+              value={data.draft}
+              style={{
+                width: `${Math.max(
+                  84,
+                  Math.min(220, (data.draft.length + 2) * 14),
+                )}px`,
+              }}
+              onFocus={(event) => event.currentTarget.select()}
+              onChange={(event) => data.onDraftChange(event.currentTarget.value)}
+              onBlur={(event) => {
+                if (cancellingRef.current) {
+                  cancellingRef.current = false;
+                  return;
+                }
+                data.onCommit(id, event.currentTarget.value);
+              }}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  event.preventDefault();
+                  event.currentTarget.blur();
+                }
+                if (event.key === "Escape") {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  cancellingRef.current = true;
+                  data.onCancel();
+                  event.currentTarget.blur();
+                }
+              }}
+            />
+          ) : (
+            <button
+              type="button"
+              title="点击修改关系文字"
+              aria-label={`修改关系：${data.label}`}
+              onClick={(event) => {
+                event.stopPropagation();
+                data.onBeginEdit(id);
+              }}
+            >
+              {data.label}
+            </button>
+          )}
+        </div>
+      </EdgeLabelRenderer>
+    </>
+  );
+});
+
 const graphNodeTypes = {
   knowledge: KnowledgeGraphNode,
   graphAnnotation: GraphAnnotationNode,
+};
+
+const editableRelationEdgeTypes = {
+  editableRelation: EditableRelationEdge,
 };
 
 function buildFlowNodes(
@@ -672,17 +826,6 @@ function buildFlowNodes(
 
 const ReactFlowCanvas = dynamic(
   () => import("@xyflow/react").then((module) => module.ReactFlow),
-  { ssr: false },
-);
-const ModelPreview = dynamic(
-  () => import("./model-preview").then((module) => module.ModelPreview),
-  { ssr: false },
-);
-const DocumentMediaPreview = dynamic(
-  () =>
-    import("./document-media-preview").then(
-      (module) => module.DocumentMediaPreview,
-    ),
   { ssr: false },
 );
 
@@ -821,6 +964,9 @@ export default function Home() {
   const [assetFolderFilter, setAssetFolderFilter] = useState("all");
   const [assetKindFilter, setAssetKindFilter] = useState<AssetItem["kind"] | "all">("all");
   const [assetLayout, setAssetLayout] = useState<"grid" | "list">("grid");
+  const [assetPreviewWidth, setAssetPreviewWidth] = useState(
+    ASSET_PREVIEW_DEFAULT_WIDTH,
+  );
   const [basicInfoOpen, setBasicInfoOpen] = useState(true);
   const [versionsOpen, setVersionsOpen] = useState(false);
   const [versions, setVersions] = useState<WorkspaceVersion[]>([]);
@@ -829,14 +975,28 @@ export default function Home() {
     useState<AssetContextMenuState | null>(null);
   const [assetClipboardId, setAssetClipboardId] = useState<string | null>(null);
   const [connectionPicker, setConnectionPicker] = useState<GraphConnectionPickerState | null>(null);
+  const [editingRelationId, setEditingRelationId] = useState<string | null>(null);
+  const [relationDraft, setRelationDraft] = useState("");
   const [historyVersion, setHistoryVersion] = useState(0);
   const [historyAvailability, setHistoryAvailability] = useState({
     undo: false,
     redo: false,
   });
   const [hydrated, setHydrated] = useState(false);
+  const [workspaceDirectorySupported, setWorkspaceDirectorySupported] =
+    useState(false);
+  const [workspaceDirectoryConnected, setWorkspaceDirectoryConnected] =
+    useState(false);
   const noticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const directoryInput = useRef<HTMLInputElement>(null);
+  const assetBrowserRef = useRef<HTMLDivElement>(null);
+  const assetPreviewWidthRef = useRef(ASSET_PREVIEW_DEFAULT_WIDTH);
+  const assetResizeFrame = useRef<number | null>(null);
+  const assetResizeState = useRef<{
+    pointerId: number;
+    min: number;
+    max: number;
+  } | null>(null);
   const flowInstance = useRef<ReactFlowInstance<StudioFlowNode, FlowEdge> | null>(null);
   const historyPast = useRef<GraphHistoryEntry[]>([]);
   const historyFuture = useRef<GraphHistoryEntry[]>([]);
@@ -859,6 +1019,7 @@ export default function Home() {
   const scenes = activeWorkspace?.scenes.length ? activeWorkspace.scenes : [blankScene];
   const topics = activeWorkspace?.topics ?? [];
   const graphAnnotations = activeWorkspace?.graphAnnotations ?? [];
+  const deliveryPackages = activeWorkspace?.deliveryPackages ?? [];
 
   const updateActiveWorkspace = (
     updater: (workspace: WorkspaceRecord) => WorkspaceRecord,
@@ -978,6 +1139,7 @@ export default function Home() {
       ...annotation,
       nodeIds: [...annotation.nodeIds],
     })),
+    deliveryPackages: deliveryPackages.map((item) => ({ ...item })),
   });
 
   const commitGraphHistory = () => {
@@ -1002,6 +1164,9 @@ export default function Home() {
               graphAnnotations: snapshot.graphAnnotations.map((annotation) => ({
                 ...annotation,
                 nodeIds: [...annotation.nodeIds],
+              })),
+              deliveryPackages: snapshot.deliveryPackages.map((item) => ({
+                ...item,
               })),
             }
           : workspace,
@@ -1125,7 +1290,47 @@ export default function Home() {
     });
   }, [assets, graphAnnotations, selectedNodeIds, visibleNodes]);
 
-  const flowEdges = useMemo<FlowEdge[]>(
+  const cancelRelationEdit = useCallback(() => {
+    setEditingRelationId(null);
+    setRelationDraft("");
+  }, []);
+
+  const beginRelationEdit = useCallback(
+    (relationId: string) => {
+      const relation = relations.find((item) => item.id === relationId);
+      if (!relation) return;
+      setEditingRelationId(relation.id);
+      setRelationDraft(relation.type);
+      setGraphContextMenu(null);
+      setConnectionPicker(null);
+    },
+    [relations],
+  );
+
+  const commitRelationLabel = useCallback(
+    (relationId: string, value: string) => {
+      const relation = relations.find((item) => item.id === relationId);
+      if (!relation) {
+        cancelRelationEdit();
+        return;
+      }
+      const nextLabel = value.trim() || relation.type;
+      if (nextLabel !== relation.type) {
+        commitGraphHistory();
+        updateActiveWorkspace((workspace) => ({
+          ...workspace,
+          relations: workspace.relations.map((item) =>
+            item.id === relationId ? { ...item, type: nextLabel } : item,
+          ),
+        }));
+        flash(`关系已修改为「${nextLabel}」`);
+      }
+      cancelRelationEdit();
+    },
+    [cancelRelationEdit, relations],
+  );
+
+  const flowEdges = useMemo<EditableRelationFlowEdge[]>(
     () =>
       relations
         .filter(
@@ -1136,14 +1341,32 @@ export default function Home() {
           id: relation.id,
           source: relation.source,
           target: relation.target,
-          label: relation.type,
+          type: "editableRelation" as const,
           className: "knowledge-edge",
-          labelStyle: { fill: "#57544d", fontSize: 8, fontWeight: 700 },
-          labelBgStyle: { fill: "#f7f5ef", fillOpacity: 0.92 },
-          labelBgPadding: [4, 2],
+          ariaLabel: `关系：${relation.type}，点击可修改`,
+          data: {
+            label: relation.type,
+            draft:
+              editingRelationId === relation.id
+                ? relationDraft
+                : relation.type,
+            editing: editingRelationId === relation.id,
+            onBeginEdit: beginRelationEdit,
+            onDraftChange: setRelationDraft,
+            onCommit: commitRelationLabel,
+            onCancel: cancelRelationEdit,
+          },
           style: { stroke: "#87847b", strokeWidth: 1.2 },
         })),
-    [relations, visibleNodeIds],
+    [
+      beginRelationEdit,
+      cancelRelationEdit,
+      commitRelationLabel,
+      editingRelationId,
+      relationDraft,
+      relations,
+      visibleNodeIds,
+    ],
   );
 
   const saveWorkspaceVersion = () => {
@@ -1163,6 +1386,9 @@ export default function Home() {
       graphAnnotations: activeWorkspace.graphAnnotations.map((annotation) => ({
         ...annotation,
         nodeIds: [...annotation.nodeIds],
+      })),
+      deliveryPackages: activeWorkspace.deliveryPackages.map((item) => ({
+        ...item,
       })),
     };
     const version: WorkspaceVersion = {
@@ -1184,6 +1410,9 @@ export default function Home() {
           ? {
               ...version.snapshot,
               assets: version.snapshot.assets.map((asset) => ({ ...asset })),
+              deliveryPackages: (
+                version.snapshot.deliveryPackages ?? []
+              ).map((item) => ({ ...item })),
             }
           : workspace,
       ),
@@ -1221,6 +1450,14 @@ export default function Home() {
       const blob = await readLocalAssetBlob(source.id);
       if (blob) {
         await storeLocalAssetBlob(id, blob);
+        await writeWorkspaceAssetFile(
+          activeWorkspaceId,
+          {
+            name: duplicateAssetName(source.name),
+            path: source.path,
+          },
+          blob,
+        ).catch(() => false);
         previewUrl = URL.createObjectURL(blob);
       }
     } catch {
@@ -1239,18 +1476,151 @@ export default function Home() {
     flash(`已创建「${duplicated.name}」`);
   };
 
-  const renameAsset = (assetId: string) => {
+  const renameAsset = async (assetId: string) => {
     const asset = assets.find((item) => item.id === assetId);
     if (!asset) return;
-    const nextName = window.prompt("重命名资源", asset.name)?.trim();
+    const extensionIndex = asset.name.lastIndexOf(".");
+    const extension =
+      extensionIndex > 0 ? asset.name.slice(extensionIndex) : "";
+    const currentBaseName = extension
+      ? asset.name.slice(0, extensionIndex)
+      : asset.name;
+    const enteredName = window
+      .prompt(
+        extension
+          ? `重命名资源（扩展名保持 ${extension}）`
+          : "重命名资源",
+        currentBaseName,
+      )
+      ?.trim();
+    const normalizedBaseName =
+      extension &&
+      enteredName?.toLowerCase().endsWith(extension.toLowerCase())
+        ? enteredName.slice(0, -extension.length)
+        : enteredName;
+    const nextName = normalizedBaseName
+      ? `${normalizedBaseName}${extension}`
+      : "";
     if (!nextName || nextName === asset.name) return;
+    if (/[<>:"/\\|?*\u0000-\u001f]/.test(nextName)) {
+      flash("资源名称不能包含系统保留字符");
+      return;
+    }
+    if (
+      assets.some(
+        (item) =>
+          item.id !== assetId &&
+          item.path === asset.path &&
+          item.name.toLowerCase() === nextName.toLowerCase(),
+      )
+    ) {
+      flash("当前目录已经存在同名资源");
+      return;
+    }
+    const physicalRename = await renameWorkspaceAssetFile(
+      activeWorkspaceId,
+      asset,
+      nextName,
+    ).catch(() => "unavailable" as const);
+    if (physicalRename === "conflict") {
+      flash("本机工作区当前目录已经存在同名文件");
+      return;
+    }
+    if (
+      physicalRename === "missing" &&
+      workspaceDirectoryConnected
+    ) {
+      flash("本机工作区中未找到该资源源文件，未执行重命名");
+      return;
+    }
     commitGraphHistory();
     setAssets((current) =>
       current.map((item) =>
         item.id === assetId ? { ...item, name: nextName } : item,
       ),
     );
-    flash(`已重命名为「${nextName}」`);
+    flash(
+      physicalRename === "renamed"
+        ? `已重命名源文件为「${nextName}」`
+        : `已重命名本地资源为「${nextName}」`,
+    );
+  };
+
+  const createDeliveryPackage = async (assetId: string) => {
+    const source = assets.find((item) => item.id === assetId);
+    if (!source) return;
+    if (source.kind !== "model") {
+      flash("目前仅模型资源可以创建交付包");
+      return;
+    }
+    const packageName = window
+      .prompt("创建交付包：请输入英文名称", "")
+      ?.trim();
+    if (!packageName) return;
+    if (!/^[A-Za-z][A-Za-z0-9_]*$/.test(packageName)) {
+      flash("交付包名称必须以英文字母开头，且只能包含英文、数字和下划线");
+      return;
+    }
+    if (
+      deliveryPackages.some(
+        (item) => item.name.toLowerCase() === packageName.toLowerCase(),
+      )
+    ) {
+      flash(`交付包「${packageName}」已经存在`);
+      return;
+    }
+    const blob = await readLocalAssetBlob(source.id);
+    if (!blob) {
+      flash("该模型没有可复制的本地源文件");
+      return;
+    }
+    const extensionIndex = source.name.lastIndexOf(".");
+    const extension =
+      extensionIndex >= 0 ? source.name.slice(extensionIndex) : "";
+    const sourceCopyName = `${packageName}${extension}`;
+    const sourceCopyId = `asset-delivery-${crypto.randomUUID()}`;
+    const packageId = `delivery-${crypto.randomUUID()}`;
+    const packagePath = `Deliveries/${packageName}/`;
+    const sourceCopy: AssetItem = {
+      ...source,
+      id: sourceCopyId,
+      name: sourceCopyName,
+      path: `${packagePath}Source/`,
+      references: 0,
+      sourceAssetId: source.id,
+      previewUrl: URL.createObjectURL(blob),
+    };
+    await storeLocalAssetBlob(sourceCopyId, blob);
+    const physicalDirectory = await createWorkspaceDeliveryDirectories(
+      activeWorkspaceId,
+      packageName,
+      source,
+      sourceCopyName,
+      blob,
+    ).catch(() => false);
+    commitGraphHistory();
+    updateActiveWorkspace((workspace) => ({
+      ...workspace,
+      assets: [sourceCopy, ...workspace.assets],
+      deliveryPackages: [
+        {
+          id: packageId,
+          name: packageName,
+          sourceAssetId: source.id,
+          sourceCopyAssetId: sourceCopyId,
+          path: packagePath,
+          createdAt: new Date().toISOString(),
+          physicalDirectory,
+        },
+        ...workspace.deliveryPackages,
+      ],
+    }));
+    setSelectedAssetId(sourceCopyId);
+    flash(
+      physicalDirectory
+        ? `已创建交付包「${packageName}」及本机目录`
+        : `已创建交付包「${packageName}」`,
+    );
   };
 
   const deleteAsset = (assetId: string) => {
@@ -1330,6 +1700,13 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
+    setWorkspaceDirectorySupported(supportsWorkspaceDirectoryAccess());
+    void workspaceDirectoryIsConnected(activeWorkspaceId)
+      .then(setWorkspaceDirectoryConnected)
+      .catch(() => setWorkspaceDirectoryConnected(false));
+  }, [activeWorkspaceId]);
+
+  useEffect(() => {
     try {
       const stored = window.localStorage.getItem("inscription-workspaces-v1");
       const storedActive = window.localStorage.getItem("inscription-active-workspace-v1");
@@ -1344,6 +1721,7 @@ export default function Home() {
             return {
               ...workspace,
               graphAnnotations: workspace.graphAnnotations ?? [],
+              deliveryPackages: workspace.deliveryPackages ?? [],
               nodes: workspace.nodes.map((node) => ({
                 ...node,
                 assetIds: [
@@ -1388,6 +1766,30 @@ export default function Home() {
       // A broken version index must not prevent the workspace from opening.
     }
   }, []);
+
+  useEffect(() => {
+    const storedValue = window.localStorage.getItem(
+      "inscription-asset-preview-width-v1",
+    );
+    if (!storedValue) return;
+    const storedWidth = Number(storedValue);
+    if (!Number.isFinite(storedWidth)) return;
+    const nextWidth = Math.max(
+      ASSET_PREVIEW_MIN_WIDTH,
+      Math.min(900, storedWidth),
+    );
+    assetPreviewWidthRef.current = nextWidth;
+    setAssetPreviewWidth(nextWidth);
+  }, []);
+
+  useEffect(
+    () => () => {
+      if (assetResizeFrame.current !== null) {
+        window.cancelAnimationFrame(assetResizeFrame.current);
+      }
+    },
+    [],
+  );
 
   useEffect(() => {
     if (!hydrated) return;
@@ -1447,6 +1849,7 @@ export default function Home() {
     setSelectedAssetId(activeWorkspace?.assets[0]?.id ?? "");
     setGraphContextMenu(null);
     setAssetContextMenu(null);
+    cancelRelationEdit();
     historyPast.current = [];
     historyFuture.current = [];
     refreshHistoryAvailability();
@@ -1460,6 +1863,7 @@ export default function Home() {
         setWorkspaceMenuOpen(false);
         setGraphContextMenu(null);
         setAssetContextMenu(null);
+        cancelRelationEdit();
       }
       if (event.altKey) {
         const target = sectionMeta.find(
@@ -1470,7 +1874,71 @@ export default function Home() {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [explorer]);
+  }, [cancelRelationEdit, explorer]);
+
+  const connectCurrentWorkspaceDirectory = async () => {
+    if (!supportsWorkspaceDirectoryAccess()) {
+      flash("当前浏览器不支持直接连接本机工作区");
+      return;
+    }
+    try {
+      const handle = await connectWorkspaceDirectory(activeWorkspaceId);
+      if (!handle) return;
+      setWorkspaceDirectoryConnected(true);
+      let copied = 0;
+      for (const asset of assets) {
+        const blob = await readLocalAssetBlob(asset.id);
+        if (!blob) continue;
+        if (
+          await writeWorkspaceAssetFile(
+            activeWorkspaceId,
+            asset,
+            blob,
+          ).catch(() => false)
+        ) {
+          copied += 1;
+        }
+      }
+      const materializedPackageIds: string[] = [];
+      for (const deliveryPackage of deliveryPackages) {
+        const source = assets.find(
+          (asset) => asset.id === deliveryPackage.sourceAssetId,
+        );
+        const sourceCopy = assets.find(
+          (asset) => asset.id === deliveryPackage.sourceCopyAssetId,
+        );
+        if (!source || !sourceCopy) continue;
+        const blob = await readLocalAssetBlob(sourceCopy.id);
+        if (!blob) continue;
+        if (
+          await createWorkspaceDeliveryDirectories(
+            activeWorkspaceId,
+            deliveryPackage.name,
+            source,
+            sourceCopy.name,
+            blob,
+          ).catch(() => false)
+        ) {
+          materializedPackageIds.push(deliveryPackage.id);
+        }
+      }
+      if (materializedPackageIds.length > 0) {
+        const packageIds = new Set(materializedPackageIds);
+        updateActiveWorkspace((workspace) => ({
+          ...workspace,
+          deliveryPackages: workspace.deliveryPackages.map((item) =>
+            packageIds.has(item.id)
+              ? { ...item, physicalDirectory: true }
+              : item,
+          ),
+        }));
+      }
+      flash(`本机工作区已连接，已同步 ${copied} 个资源源文件`);
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") return;
+      flash("连接本机工作区失败");
+    }
+  };
 
   const addImportedFiles = async (
     files: Array<{ file: File; path: string }>,
@@ -1489,9 +1957,14 @@ export default function Home() {
       };
     });
     await Promise.all(
-      additions.map((asset, index) =>
-        storeLocalAssetBlob(asset.id, files[index].file),
-      ),
+      additions.map(async (asset, index) => {
+        await storeLocalAssetBlob(asset.id, files[index].file);
+        await writeWorkspaceAssetFile(
+          activeWorkspaceId,
+          asset,
+          files[index].file,
+        ).catch(() => false);
+      }),
     );
     setAssets((current) => [...additions, ...current]);
     setSelectedAssetId(additions[0].id);
@@ -1536,6 +2009,91 @@ export default function Home() {
     void addImportedFiles(files);
     event.target.value = "";
   };
+
+  const getAssetPreviewWidthBounds = useCallback(() => {
+    const browser = assetBrowserRef.current;
+    if (!browser) {
+      return {
+        min: ASSET_PREVIEW_MIN_WIDTH,
+        max: 900,
+      };
+    }
+    const treeWidth =
+      browser.querySelector<HTMLElement>(".asset-tree-panel")?.offsetWidth ?? 0;
+    return {
+      min: ASSET_PREVIEW_MIN_WIDTH,
+      max: Math.max(
+        ASSET_PREVIEW_MIN_WIDTH,
+        browser.clientWidth -
+          treeWidth -
+          ASSET_GALLERY_MIN_WIDTH -
+          ASSET_PANEL_DIVIDER_WIDTH,
+      ),
+    };
+  }, []);
+
+  const applyAssetPreviewWidth = useCallback(
+    (nextWidth: number, persist = false) => {
+      const { min, max } = getAssetPreviewWidthBounds();
+      const width = Math.round(Math.max(min, Math.min(max, nextWidth)));
+      assetPreviewWidthRef.current = width;
+      assetBrowserRef.current?.style.setProperty(
+        "--asset-preview-width",
+        `${width}px`,
+      );
+      if (persist) {
+        setAssetPreviewWidth(width);
+        window.localStorage.setItem(
+          "inscription-asset-preview-width-v1",
+          String(width),
+        );
+      }
+    },
+    [getAssetPreviewWidthBounds],
+  );
+
+  const finishAssetPanelResize = useCallback(
+    (event: ReactPointerEvent<HTMLDivElement>) => {
+      const resize = assetResizeState.current;
+      if (!resize || resize.pointerId !== event.pointerId) return;
+      if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+        event.currentTarget.releasePointerCapture(event.pointerId);
+      }
+      if (assetResizeFrame.current !== null) {
+        window.cancelAnimationFrame(assetResizeFrame.current);
+        assetResizeFrame.current = null;
+      }
+      assetResizeState.current = null;
+      assetBrowserRef.current?.classList.remove("is-resizing");
+      applyAssetPreviewWidth(assetPreviewWidthRef.current, true);
+    },
+    [applyAssetPreviewWidth],
+  );
+
+  useEffect(() => {
+    if (section !== "assets") return;
+    let resizeFrame: number | null = window.requestAnimationFrame(() => {
+      applyAssetPreviewWidth(assetPreviewWidthRef.current, true);
+      resizeFrame = null;
+    });
+    const onWindowResize = () => {
+      if (resizeFrame !== null) window.cancelAnimationFrame(resizeFrame);
+      resizeFrame = window.requestAnimationFrame(() => {
+        applyAssetPreviewWidth(assetPreviewWidthRef.current, true);
+        resizeFrame = null;
+      });
+    };
+    window.addEventListener("resize", onWindowResize);
+    return () => {
+      window.removeEventListener("resize", onWindowResize);
+      if (resizeFrame !== null) window.cancelAnimationFrame(resizeFrame);
+    };
+  }, [
+    applyAssetPreviewWidth,
+    assetPreviewWidth,
+    section,
+    sidebarCollapsed,
+  ]);
 
   const createNode = () => {
     commitGraphHistory();
@@ -1585,6 +2143,7 @@ export default function Home() {
       scenes: [{ ...blankScene, id: `scene-${Date.now()}` }],
       topics: [],
       graphAnnotations: [],
+      deliveryPackages: [],
     };
     setWorkspaces((current) => [...current, created]);
     setActiveWorkspaceId(id);
@@ -2088,6 +2647,12 @@ export default function Home() {
             setSection("boards");
           },
         },
+        {
+          id: "delivery-package",
+          label: "创建交付包",
+          disabled: assetMenuTarget.kind !== "model",
+          onSelect: () => void createDeliveryPackage(assetMenuTarget.id),
+        },
         { id: "asset-separator-1", label: "", separator: true },
         {
           id: "copy",
@@ -2264,10 +2829,8 @@ export default function Home() {
           <button
             className="button-primary"
             type="button"
-            onClick={() => {
-              setActiveTopicId(topics[0]?.id ?? "");
-              setExplorer(true);
-            }}
+            disabled
+            title="Explorer 功能构思中"
           >
             <span>▶</span> Explorer
           </button>
@@ -2276,7 +2839,9 @@ export default function Home() {
 
       <div
         className={`studio-body ${sidebarCollapsed ? "sidebar-collapsed" : ""} ${
-          inspectorOpen && section !== "boards" ? "" : "inspector-hidden"
+          inspectorOpen && section !== "boards" && section !== "assets"
+            ? ""
+            : "inspector-hidden"
         }`}
       >
         <aside className="studio-sidebar">
@@ -2349,13 +2914,32 @@ export default function Home() {
                 )}
               </div>
 
-              <div className="sidebar-sync">
+              <button
+                type="button"
+                className={`sidebar-sync ${
+                  workspaceDirectoryConnected ? "connected" : ""
+                }`}
+                disabled={!workspaceDirectorySupported}
+                onClick={() => void connectCurrentWorkspaceDirectory()}
+              >
                 <span className="sync-icon">↻</span>
                 <div>
-                  <strong>本机数据已连接</strong>
-                  <small>资源文件保留在当前设备</small>
+                  <strong>
+                    {workspaceDirectoryConnected
+                      ? "本机工作区已连接"
+                      : workspaceDirectorySupported
+                        ? "连接本机工作区"
+                        : "使用内部资源库"}
+                  </strong>
+                  <small>
+                    {workspaceDirectoryConnected
+                      ? "源文件与交付目录可直接写入"
+                      : workspaceDirectorySupported
+                        ? "启用真实文件重命名与交付目录"
+                        : "资源仍保存在当前设备"}
+                  </small>
                 </div>
-              </div>
+              </button>
             </>
           )}
         </aside>
@@ -2444,6 +3028,7 @@ export default function Home() {
                     nodes={flowNodes}
                     edges={flowEdges}
                     nodeTypes={graphNodeTypes}
+                    edgeTypes={editableRelationEdgeTypes}
                     onInit={(instance) => {
                       flowInstance.current =
                         instance as unknown as ReactFlowInstance<
@@ -2490,6 +3075,10 @@ export default function Home() {
                       setGraphContextMenu(null);
                       setConnectionPicker(null);
                       if (node.type === "knowledge") setInspectorOpen(true);
+                    }}
+                    onEdgeClick={(event, edge) => {
+                      event.stopPropagation();
+                      beginRelationEdit(edge.id);
                     }}
                     onPaneClick={() => {
                       setSelectedNodeId("");
@@ -2675,7 +3264,10 @@ export default function Home() {
 
             {section === "assets" && (
               <div className="assets-view">
-                <div className="asset-browser">
+                <div
+                  ref={assetBrowserRef}
+                  className="asset-browser"
+                >
                   <div className="asset-tree-panel">
                     <div className="panel-heading">
                       <span>资源目录</span>
@@ -2695,6 +3287,37 @@ export default function Home() {
                       >
                         <span>▾</span> 📁 Assets <small>{assets.length}</small>
                       </button>
+                      <button
+                        type="button"
+                        className={
+                          assetFolderFilter === "Deliveries" ? "active" : ""
+                        }
+                        onClick={() => setAssetFolderFilter("Deliveries")}
+                      >
+                        <span>{deliveryPackages.length ? "▾" : "›"}</span>
+                        📦 交付包
+                        <small>{deliveryPackages.length}</small>
+                      </button>
+                      {deliveryPackages.map((item) => (
+                        <button
+                          type="button"
+                          className={`nested ${
+                            assetFolderFilter ===
+                            `Deliveries/${item.name}`
+                              ? "active"
+                              : ""
+                          }`}
+                          key={item.id}
+                          onClick={() =>
+                            setAssetFolderFilter(
+                              `Deliveries/${item.name}`,
+                            )
+                          }
+                        >
+                          <span />
+                          📁 {item.name}
+                        </button>
+                      ))}
                       <button
                         type="button"
                         className={assetFolderFilter === "图像档案" ? "active" : ""}
@@ -2847,6 +3470,78 @@ export default function Home() {
                   </div>
 
                   <div
+                    className="asset-panel-resizer"
+                    role="separator"
+                    tabIndex={0}
+                    aria-label="调整资源画廊与资源预览宽度"
+                    aria-orientation="vertical"
+                    aria-valuemin={ASSET_PREVIEW_MIN_WIDTH}
+                    aria-valuemax={900}
+                    aria-valuenow={assetPreviewWidth}
+                    aria-valuetext={`资源预览宽度 ${assetPreviewWidth} 像素`}
+                    title="左右拖动调整画廊与预览宽度"
+                    onPointerDown={(event) => {
+                      if (event.button !== 0) return;
+                      event.preventDefault();
+                      assetResizeState.current = {
+                        pointerId: event.pointerId,
+                        ...getAssetPreviewWidthBounds(),
+                      };
+                      event.currentTarget.setPointerCapture(event.pointerId);
+                      assetBrowserRef.current?.classList.add("is-resizing");
+                    }}
+                    onPointerMove={(event) => {
+                      const resize = assetResizeState.current;
+                      const browser = assetBrowserRef.current;
+                      if (
+                        !resize ||
+                        resize.pointerId !== event.pointerId ||
+                        !browser
+                      ) {
+                        return;
+                      }
+                      const nextWidth = Math.max(
+                        resize.min,
+                        Math.min(
+                          resize.max,
+                          browser.getBoundingClientRect().right - event.clientX,
+                        ),
+                      );
+                      assetPreviewWidthRef.current = nextWidth;
+                      if (assetResizeFrame.current !== null) {
+                        window.cancelAnimationFrame(assetResizeFrame.current);
+                      }
+                      assetResizeFrame.current = window.requestAnimationFrame(
+                        () => {
+                          browser.style.setProperty(
+                            "--asset-preview-width",
+                            `${Math.round(assetPreviewWidthRef.current)}px`,
+                          );
+                          assetResizeFrame.current = null;
+                        },
+                      );
+                    }}
+                    onPointerUp={finishAssetPanelResize}
+                    onPointerCancel={finishAssetPanelResize}
+                    onKeyDown={(event) => {
+                      if (
+                        event.key !== "ArrowLeft" &&
+                        event.key !== "ArrowRight"
+                      ) {
+                        return;
+                      }
+                      event.preventDefault();
+                      applyAssetPreviewWidth(
+                        assetPreviewWidthRef.current +
+                          (event.key === "ArrowLeft" ? 24 : -24),
+                        true,
+                      );
+                    }}
+                  >
+                    <span aria-hidden="true" />
+                  </div>
+
+                  <div
                     className="asset-preview-panel"
                     onContextMenu={(event) => {
                       event.preventDefault();
@@ -2858,83 +3553,30 @@ export default function Home() {
                       });
                     }}
                   >
-                    <div className="panel-heading">
-                      <span>资源预览</span>
-                      <button
-                        type="button"
-                        aria-label="下载当前资源"
-                        title="下载当前资源"
-                        onClick={downloadSelectedAsset}
-                      >
-                        ↓
-                      </button>
-                    </div>
-                    {selectedAsset && (
-                      <div className="asset-preview">
-                        <div className={`asset-preview-stage asset-${selectedAsset.kind}`}>
-                          {selectedAsset.previewUrl &&
-                          selectedAsset.kind === "image" ? (
-                            <img src={selectedAsset.previewUrl} alt={selectedAsset.name} />
-                          ) : selectedAsset.previewUrl &&
-                            selectedAsset.kind === "video" ? (
-                            <video src={selectedAsset.previewUrl} controls />
-                          ) : selectedAsset.previewUrl &&
-                            selectedAsset.kind === "model" ? (
-                            <ModelPreview
-                              url={selectedAsset.previewUrl}
-                              fileName={selectedAsset.name}
-                            />
-                          ) : selectedAsset.previewUrl &&
-                            (selectedAsset.kind === "document" ||
-                              selectedAsset.kind === "audio" ||
-                              selectedAsset.kind === "text") ? (
-                            <DocumentMediaPreview
-                              url={selectedAsset.previewUrl}
-                              fileName={selectedAsset.name}
-                            />
-                          ) : selectedAsset.kind === "model" ? (
-                            <div className="model-file-missing">
-                              <span>3D</span>
-                              <strong>示例资源未绑定本机模型文件</strong>
-                              <small>导入 GLB、GLTF、FBX 或 OBJ 后可直接交互预览</small>
-                            </div>
-                          ) : (
-                            <span>{assetGlyph(selectedAsset.kind)}</span>
-                          )}
-                        </div>
-                        <div className="asset-preview-meta">
-                          <span>{selectedAsset.kind.toUpperCase()}</span>
-                          <h3>{selectedAsset.name}</h3>
-                          <p>{selectedAsset.path}</p>
-                          <dl>
-                            <div>
-                              <dt>文件大小</dt>
-                              <dd>{selectedAsset.size}</dd>
-                            </div>
-                            <div>
-                              <dt>节点引用</dt>
-                              <dd>{selectedAsset.references}</dd>
-                            </div>
-                            <div>
-                              <dt>状态</dt>
-                              <dd>本机可用</dd>
-                            </div>
-                          </dl>
-                          <button
-                            type="button"
-                            className="button-primary"
-                            disabled={!selectedNode}
-                            onClick={() => {
-                              if (!selectedNode || !selectedAsset) return;
-                              attachAssetToNode(selectedNode.id, selectedAsset.id);
-                              setSection("graph");
-                            }}
-                          >
-                            关联到{selectedNode ? `「${selectedNode.title}」` : " Node"}
-                          </button>
-                        </div>
-                      </div>
-                    )}
+                    <AssetPreview
+                      asset={selectedAsset}
+                      onDownload={downloadSelectedAsset}
+                      action={
+                        <button
+                          type="button"
+                          className="button-primary"
+                          disabled={!selectedNode}
+                          onClick={() => {
+                            if (!selectedNode || !selectedAsset) return;
+                            attachAssetToNode(
+                              selectedNode.id,
+                              selectedAsset.id,
+                            );
+                            setSection("graph");
+                          }}
+                        >
+                          关联到
+                          {selectedNode
+                            ? `「${selectedNode.title}」`
+                            : " Node"}
+                        </button>
+                      }
+                    />
                   </div>
                 </div>
               </div>
@@ -2948,6 +3590,11 @@ export default function Home() {
                 assets={assets}
                 selectedAssetId={selectedAssetId}
                 onSelectAsset={setSelectedAssetId}
+                onRenameAsset={(assetId) => void renameAsset(assetId)}
+                onCreateDeliveryPackage={(assetId) =>
+                  void createDeliveryPackage(assetId)
+                }
+                onDeleteAsset={deleteAsset}
                 onHydrateAsset={(assetId, previewUrl) => {
                   setAssets((current) =>
                     current.map((asset) =>
@@ -2968,6 +3615,18 @@ export default function Home() {
                         ),
                     ),
                   ]);
+                  void Promise.all(
+                    createdAssets.map(async (asset) => {
+                      const blob = await readLocalAssetBlob(asset.id);
+                      if (blob) {
+                        await writeWorkspaceAssetFile(
+                          activeWorkspaceId,
+                          asset,
+                          blob,
+                        ).catch(() => false);
+                      }
+                    }),
+                  );
                   setSelectedAssetId(createdAssets[0].id);
                   flash(`已自动创建 ${createdAssets.length} 个资源`);
                 }}

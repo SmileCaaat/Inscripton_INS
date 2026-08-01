@@ -100,9 +100,35 @@ npm run lint
 npm test
 ```
 
+### Electron 桌面试用版
+
+桌面开发模式：
+
+```bash
+npm run desktop:dev
+```
+
+生成 Windows x64 便携版：
+
+```bash
+npm run desktop:dist
+```
+
+便携程序会输出到 `release/`，无需另外启动 localhost，也不要求目标电脑安装 Node.js。
+
+正式发布签名需要将证书配置到打包环境：
+
+```text
+CSC_LINK=证书文件路径（.p12 或 .pfx）
+CSC_KEY_PASSWORD=证书密码
+```
+
+Electron Builder 会自动使用证书完成 Windows SHA-256 签名；没有证书时生成的是内部测试用未签名包。
+
 ## 技术结构
 
 - **React 19 + Vinext + Vite**：应用界面与构建。
+- **Electron**：Windows 桌面窗口与离线便携包。
 - **XYFlow**：Knowledge Graph 与 Reference Board 画布。
 - **Three.js**：三维模型加载与交互预览。
 - **PDF.js / Mammoth.js / SheetJS / epub.js / wavesurfer.js**：文献与媒体预览。
@@ -113,11 +139,18 @@ npm test
 ```text
 app/
 ├─ page.tsx                       Studio、图谱、资源与 Explorer
+├─ asset-preview.tsx              资源与参考板共用预览
 ├─ reference-board.tsx            参考板、资源拖入与图片切图
 ├─ application-context-menu.tsx   应用统一右键菜单
 ├─ document-media-preview.tsx     文献、表格、电子书和音频预览
 ├─ model-preview.tsx              Three.js 三维预览
 └─ local-assets.ts                本机资源 Blob 持久化
+
+electron/
+├─ main.cjs                       Electron 主进程与窗口安全策略
+├─ preload.cjs                    受限桌面环境桥接
+├─ renderer/                      离线桌面渲染入口
+└─ vite.desktop.config.ts         桌面界面构建配置
 ```
 
 ## 分支规划
@@ -125,7 +158,7 @@ app/
 - **`main`**：当前浏览器版稳定基线。
 - **`desktop`**：Electron 桌面版开发线，从 `main` 复用界面与核心数据模型。
 
-Desktop 版将优先解决真实文件路径、工作区落盘、原生目录选择、安装包和应用图标，详细方案见 [Desktop 桌面版规划](./docs/Desktop桌面版规划.md)。
+Desktop 版已经具备第一版 Windows 便携包；后续将继续完善真实文件路径、原生目录选择和工作区落盘，详细方案见 [Desktop 桌面版规划](./docs/Desktop桌面版规划.md)。
 
 ## 文档
 

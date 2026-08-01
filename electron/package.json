@@ -1,0 +1,52 @@
+{
+  "name": "inscription-ins-desktop",
+  "version": "0.1.0",
+  "description": "INS Studio 本地优先数字人文知识平台桌面版",
+  "author": "INS Studio Contributors",
+  "main": "main.cjs",
+  "private": true,
+  "devDependencies": {
+    "electron": "43.2.0"
+  },
+  "build": {
+    "appId": "com.inscription.studio",
+    "productName": "INS Studio",
+    "electronDist": "../node_modules/electron/dist",
+    "asar": true,
+    "compression": "maximum",
+    "npmRebuild": false,
+    "directories": {
+      "output": "../release"
+    },
+    "files": [
+      "main.cjs",
+      "preload.cjs",
+      "package.json"
+    ],
+    "extraResources": [
+      {
+        "from": "../dist-desktop",
+        "to": "dist-desktop"
+      },
+      {
+        "from": "../public/ins-logo.png",
+        "to": "ins-logo.png"
+      }
+    ],
+    "win": {
+      "icon": "../public/ins-logo.png",
+      "target": [
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ],
+      "signingHashAlgorithms": [
+        "sha256"
+      ],
+      "artifactName": "INS-Studio-${version}-Windows-${arch}.${ext}"
+    }
+  }
+}

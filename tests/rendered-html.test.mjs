@@ -59,6 +59,10 @@ test("starter preview is fully removed", async () => {
 test("core workspace interactions are wired", async () => {
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
 
+  assert.match(
+    page,
+    /id: "assets", label: "资源", shortcut: "1"[\s\S]*id: "boards", label: "参考板", shortcut: "2"[\s\S]*id: "nodes", label: "节点", shortcut: "3"[\s\S]*id: "graph", label: "图谱", shortcut: "4"/,
+  );
   assert.match(page, /createWorkspace/);
   assert.match(page, /switchWorkspace/);
   assert.match(page, /ReactFlowCanvas/);
@@ -89,11 +93,27 @@ test("node dragging stays local to the canvas until drop", async () => {
   assert.doesNotMatch(page, /ResizeObserver loop completed/);
 });
 
+test("graph relation labels can be edited directly from an edge", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+
+  assert.match(page, /EditableRelationEdge/);
+  assert.match(page, /EdgeLabelRenderer/);
+  assert.match(page, /beginRelationEdit/);
+  assert.match(page, /commitRelationLabel/);
+  assert.match(page, /edgeTypes=\{editableRelationEdgeTypes\}/);
+  assert.match(page, /onEdgeClick=/);
+  assert.match(page, /aria-label="编辑关系文字"/);
+  assert.match(page, /event\.key === "Enter"/);
+  assert.match(page, /event\.key === "Escape"/);
+});
+
 test("reference board workflow is wired", async () => {
-  const [page, board, localAssets] = await Promise.all([
+  const [page, board, localAssets, styles, assetPreview] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/reference-board.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/local-assets.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+    readFile(new URL("../app/asset-preview.tsx", import.meta.url), "utf8"),
   ]);
 
   assert.match(page, /label: "参考板"/);
@@ -109,10 +129,41 @@ test("reference board workflow is wired", async () => {
   assert.match(board, /requestAnimationFrame\(paintPendingHeight\)/);
   assert.match(board, /setPointerCapture\(pointerId\)/);
   assert.match(board, /setDockHeight\(pendingHeight\)/);
+  assert.match(board, /startPreviewResize/);
+  assert.match(board, /--reference-preview-width/);
+  assert.match(board, /dataset\.previewResizing/);
+  assert.match(board, /onRenameAsset/);
+  assert.match(board, /onCreateDeliveryPackage/);
+  assert.match(board, /从参考板移除/);
+  assert.match(board, /REFERENCE_PREVIEW_DEFAULT_WIDTH = 420/);
+  assert.match(board, /LEGACY_REFERENCE_PREVIEW_DEFAULT_WIDTH = 310/);
+  assert.match(page, /<AssetPreview/);
+  assert.match(board, /<AssetPreview/);
+  assert.match(assetPreview, /asset-preview-stage/);
+  assert.match(styles, /aspect-ratio: 4 \/ 3/);
   assert.doesNotMatch(
     board,
     /const onMove = \(moveEvent: PointerEvent\) => \{\s*setDockHeight\(/,
   );
+});
+
+test("assets support managed source files and delivery packages", async () => {
+  const [page, workspaceFiles] = await Promise.all([
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/workspace-files.ts", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(page, /connectWorkspaceDirectory/);
+  assert.match(page, /renameWorkspaceAssetFile/);
+  assert.match(page, /createDeliveryPackage/);
+  assert.match(page, /deliveryPackages/);
+  assert.match(page, /Deliveries\/\$\{packageName\}/);
+  assert.match(page, /Explorer 功能构思中/);
+  assert.match(workspaceFiles, /showDirectoryPicker/);
+  assert.match(workspaceFiles, /createWorkspaceDeliveryDirectories/);
+  assert.match(workspaceFiles, /"Assets"/);
+  assert.match(workspaceFiles, /"Deliveries"/);
+  assert.match(workspaceFiles, /"INS_delivery\.json"/);
 });
 
 test("graph supports Q alignment and C comment frames", async () => {
@@ -126,14 +177,14 @@ test("graph supports Q alignment and C comment frames", async () => {
 });
 
 test("local assets use a real Three.js model preview", async () => {
-  const [page, viewer, localAssets, packageJson] = await Promise.all([
-    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+  const [assetPreview, viewer, localAssets, packageJson] = await Promise.all([
+    readFile(new URL("../app/asset-preview.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/model-preview.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/local-assets.ts", import.meta.url), "utf8"),
     readFile(new URL("../package.json", import.meta.url), "utf8"),
   ]);
 
-  assert.match(page, /ModelPreview/);
+  assert.match(assetPreview, /ModelPreview/);
   assert.match(viewer, /GLTFLoader/);
   assert.match(viewer, /FBXLoader/);
   assert.match(viewer, /OBJLoader/);
@@ -144,10 +195,9 @@ test("local assets use a real Three.js model preview", async () => {
 });
 
 test("documents, spreadsheets, ebooks, and audio use real local preview engines", async () => {
-  const [viewer, page, board, packageJson] = await Promise.all([
+  const [viewer, assetPreview, packageJson] = await Promise.all([
     readFile(new URL("../app/document-media-preview.tsx", import.meta.url), "utf8"),
-    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
-    readFile(new URL("../app/reference-board.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/asset-preview.tsx", import.meta.url), "utf8"),
     readFile(new URL("../package.json", import.meta.url), "utf8"),
   ]);
 
@@ -159,10 +209,25 @@ test("documents, spreadsheets, ebooks, and audio use real local preview engines"
   assert.match(viewer, /PdfPreview/);
   assert.match(viewer, /SpreadsheetPreview/);
   assert.match(viewer, /AudioPreview/);
-  assert.match(page, /DocumentMediaPreview/);
-  assert.match(board, /DocumentMediaPreview/);
+  assert.match(assetPreview, /DocumentMediaPreview/);
   assert.match(packageJson, /"pdfjs-dist"/);
   assert.match(packageJson, /"wavesurfer\.js"/);
+});
+
+test("resource gallery and preview use a flush resizable split layout", async () => {
+  const [page, styles] = await Promise.all([
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(page, /section !== "assets"/);
+  assert.match(page, /className="asset-panel-resizer"/);
+  assert.match(page, /role="separator"/);
+  assert.match(page, /setPointerCapture\(event\.pointerId\)/);
+  assert.match(page, /requestAnimationFrame/);
+  assert.match(page, /inscription-asset-preview-width-v1/);
+  assert.match(styles, /--asset-preview-width/);
+  assert.match(styles, /\.asset-browser\.is-resizing/);
 });
 
 test("resources and reference boards use application context menus", async () => {
@@ -184,4 +249,30 @@ test("resources and reference boards use application context menus", async () =>
   assert.match(board, /disconnectBoardSelection/);
   assert.match(contextMenu, /createPortal/);
   assert.match(contextMenu, /role="menu"/);
+});
+
+test("Electron desktop packaging is wired for an offline Windows build", async () => {
+  const [packageJson, desktopPackage, mainProcess, renderer, page] =
+    await Promise.all([
+      readFile(new URL("../package.json", import.meta.url), "utf8"),
+      readFile(new URL("../electron/package.json", import.meta.url), "utf8"),
+      readFile(new URL("../electron/main.cjs", import.meta.url), "utf8"),
+      readFile(
+        new URL("../electron/renderer/main.tsx", import.meta.url),
+        "utf8",
+      ),
+      readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    ]);
+
+  assert.match(packageJson, /"desktop:dist"/);
+  assert.match(packageJson, /electron-builder/);
+  assert.match(desktopPackage, /"target": "portable"/);
+  assert.match(desktopPackage, /ins-logo\.png/);
+  assert.match(mainProcess, /contextIsolation: true/);
+  assert.match(mainProcess, /nodeIntegration: false/);
+  assert.match(mainProcess, /process\.resourcesPath/);
+  assert.match(mainProcess, /loadFile/);
+  assert.match(renderer, /<Home \/>/);
+  assert.match(page, /window\.location\.protocol === "file:"/);
+  assert.match(page, /\.\/ins-logo\.png/);
 });
