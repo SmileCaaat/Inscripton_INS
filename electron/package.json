@@ -43,9 +43,11 @@
           ]
         }
       ],
-      "signingHashAlgorithms": [
-        "sha256"
-      ],
+      "signtoolOptions": {
+        "signingHashAlgorithms": [
+          "sha256"
+        ]
+      },
       "artifactName": "INS-Studio-${version}-Windows-${arch}.${ext}"
     }
   }

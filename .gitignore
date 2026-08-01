@@ -39,6 +39,7 @@ next-env.d.ts
 /dist/
 /dist-desktop/
 /release/
+/scripts/*.log
 /.wrangler/
 /outputs/
 /work/

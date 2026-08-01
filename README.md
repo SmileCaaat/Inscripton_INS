@@ -92,6 +92,15 @@ npm run dev
 http://localhost:3000
 ```
 
+Windows 下也可以直接双击以下脚本：
+
+```text
+scripts/start-localhost.cmd   Start the localhost development server.
+scripts/build-release.cmd     Build the Windows Electron release.
+```
+
+两个入口都会打开并保留 PowerShell 窗口，脚本内容使用英文，Node.js 需要 24 或更高版本。
+
 常用检查：
 
 ```bash
