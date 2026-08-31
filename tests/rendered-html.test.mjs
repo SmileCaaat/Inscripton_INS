@@ -34,7 +34,8 @@ test("server-renders the INS Studio shell", async () => {
   assert.match(html, /<title>Inscription · 数字人文知识平台<\/title>/i);
   assert.match(html, /Inscription/);
   assert.match(html, /数字人文知识平台/);
-  assert.match(html, /Explorer/);
+  assert.match(html, /归档/);
+  assert.doesNotMatch(html, />Explorer</);
   assert.doesNotMatch(html, /codex-preview/);
   assert.doesNotMatch(html, /Your site is taking shape/);
 });
@@ -47,13 +48,23 @@ test("starter preview is fully removed", async () => {
   ]);
 
   await assert.rejects(access(new URL("../app/_sites-preview", import.meta.url)));
-  assert.match(page, /function ExplorerView/);
+  assert.match(page, /ArchiveView/);
   assert.match(page, /拖入文件或整个目录/);
   assert.match(page, /创建 Node/);
   assert.match(layout, /lang="zh-CN"/);
   assert.doesNotMatch(packageJson, /react-loading-skeleton/);
   assert.doesNotMatch(page, /SkeletonPreview/);
   assert.doesNotMatch(layout, /Starter Project/);
+});
+
+test("localhost HMR does not recursively forward errors before connecting", async () => {
+  const viteConfig = await readFile(
+    new URL("../vite.config.ts", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(viteConfig, /forwardConsole: false/);
+  assert.match(viteConfig, /send was called before connect/);
 });
 
 test("core workspace interactions are wired", async () => {
@@ -70,18 +81,14 @@ test("core workspace interactions are wired", async () => {
   assert.match(page, /deleteSelectedNodes/);
   assert.match(page, /application\/x-ins-asset/);
   assert.match(page, /createConnectedNode/);
-  assert.match(page, /createTopic/);
   assert.match(page, /inscription-workspaces-v1/);
   assert.match(page, /data-node-id=/);
   assert.match(
     page,
-    /id: "narrative", label: "Narrative", shortcut: "5", disabled: true/,
+    /id: "archive", label: "归档", shortcut: "5"/,
   );
-  assert.match(
-    page,
-    /id: "topics", label: "专题", shortcut: "6", disabled: true/,
-  );
-  assert.match(page, /disabled=\{item\.disabled\}/);
+  assert.doesNotMatch(page, /label: "Narrative"/);
+  assert.doesNotMatch(page, /label: "专题"/);
 });
 
 test("node dragging stays local to the canvas until drop", async () => {
@@ -158,7 +165,7 @@ test("assets support managed source files and delivery packages", async () => {
   assert.match(page, /createDeliveryPackage/);
   assert.match(page, /deliveryPackages/);
   assert.match(page, /Deliveries\/\$\{packageName\}/);
-  assert.match(page, /Explorer 功能构思中/);
+  assert.match(page, /ArchiveView/);
   assert.match(workspaceFiles, /showDirectoryPicker/);
   assert.match(workspaceFiles, /createWorkspaceDeliveryDirectories/);
   assert.match(workspaceFiles, /"Assets"/);
@@ -214,6 +221,53 @@ test("documents, spreadsheets, ebooks, and audio use real local preview engines"
   assert.match(packageJson, /"wavesurfer\.js"/);
 });
 
+test("INS Archive exports five resource kinds with validation and checksums", async () => {
+  const [page, archive, board, packageJson, archiveSpec] = await Promise.all([
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/archive-view.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/reference-board.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../package.json", import.meta.url), "utf8"),
+    readFile(new URL("../docs/INS归档格式v1.md", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(page, /label: "归档"/);
+  assert.match(page, /<ArchiveView/);
+  assert.match(archive, /Text · Image · Model · Video · Audio/);
+  assert.match(archive, /audio: \{ code: "A", folder: "audio" \}/);
+  assert.match(archive, /checksums\.sha256/);
+  assert.match(archive, /SHA-256/);
+  assert.match(archive, /generateAsync/);
+  assert.match(archive, /本地源文件不可用/);
+  assert.match(board, /duration\?: number/);
+  assert.match(board, /sampleRate\?: number/);
+  assert.match(packageJson, /"jszip"/);
+  assert.match(archiveSpec, /Text \/ Image \/ Model \/ Video \/ Audio/);
+});
+
+test("INS Archive creates Astro exhibitions from current or existing archives", async () => {
+  const [archive, exhibition, styles, workflow] = await Promise.all([
+    readFile(new URL("../app/archive-view.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/exhibition-project.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+    readFile(new URL("../docs/INS-Astro展示工作流.md", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(archive, /基于当前归档创建/);
+  assert.match(archive, /选择已有 \.insarchive/);
+  assert.match(archive, /JSZip\.loadAsync\(file\)/);
+  assert.match(archive, /createExhibitionProject/);
+  assert.match(exhibition, /"collection" \| "research" \| "spatial"/);
+  assert.match(exhibition, /astro: "\^7\.2\.9"/);
+  assert.match(exhibition, /@google\/model-viewer/);
+  assert.match(exhibition, /src\/pages\/nodes\/\[id\]\.astro/);
+  assert.match(exhibition, /src\/pages\/assets\/\[id\]\.astro/);
+  assert.match(exhibition, /sourceArchiveChecksum/);
+  assert.match(exhibition, /Start-Localhost\.ps1/);
+  assert.match(exhibition, /Build-Release\.ps1/);
+  assert.match(styles, /\.archive-template-grid/);
+  assert.match(workflow, /INS 工作区 → 归档检查 → \.insarchive → Astro 展示项目/);
+});
+
 test("resource gallery and preview use a flush resizable split layout", async () => {
   const [page, styles] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
@@ -252,7 +306,7 @@ test("resources and reference boards use application context menus", async () =>
 });
 
 test("Electron desktop packaging is wired for an offline Windows build", async () => {
-  const [packageJson, desktopPackage, mainProcess, renderer, page] =
+  const [packageJson, desktopPackage, mainProcess, renderer, page, startScript, buildScript] =
     await Promise.all([
       readFile(new URL("../package.json", import.meta.url), "utf8"),
       readFile(new URL("../electron/package.json", import.meta.url), "utf8"),
@@ -262,6 +316,8 @@ test("Electron desktop packaging is wired for an offline Windows build", async (
         "utf8",
       ),
       readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+      readFile(new URL("../Start-INS.cmd", import.meta.url), "utf8"),
+      readFile(new URL("../Build-INS-Electron.cmd", import.meta.url), "utf8"),
     ]);
 
   assert.match(packageJson, /"desktop:dist"/);
@@ -275,4 +331,6 @@ test("Electron desktop packaging is wired for an offline Windows build", async (
   assert.match(renderer, /<Home \/>/);
   assert.match(page, /window\.location\.protocol === "file:"/);
   assert.match(page, /\.\/ins-logo\.png/);
+  assert.match(startScript, /scripts\\start-localhost\.cmd/);
+  assert.match(buildScript, /scripts\\build-release\.cmd/);
 });

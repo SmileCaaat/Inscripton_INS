@@ -4,7 +4,7 @@ import "./globals.css";
 export const metadata: Metadata = {
   title: "Inscription · 数字人文知识平台",
   description:
-    "以知识节点、关系与数字叙事为核心的本地优先数字人文研究与展示工具。",
+    "面向数字人文资产、知识节点、关系图谱与开放归档的本地优先研究工具。",
   manifest: "/manifest.webmanifest",
   icons: {
     icon: [{ url: "/ins-logo.png", type: "image/png" }],

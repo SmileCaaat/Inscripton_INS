@@ -45,6 +45,17 @@ export type BoardAsset = {
   kind: "image" | "document" | "model" | "video" | "audio" | "text";
   size: string;
   references: number;
+  description?: string;
+  creator?: string;
+  date?: string;
+  source?: string;
+  rights?: string;
+  mimeType?: string;
+  fileSize?: number;
+  duration?: number;
+  sampleRate?: number;
+  channels?: number;
+  fileGroupIds?: string[];
   previewUrl?: string;
   sourceAssetId?: string;
   cropRegion?: { x: number; y: number; w: number; h: number };
@@ -1078,6 +1089,8 @@ export function ReferenceBoardView({
           path: `${source}/${boardTitle}/`,
           kind,
           size: formatBytes(file.size),
+          mimeType: file.type || undefined,
+          fileSize: file.size,
           references: 1,
           previewUrl:
             URL.createObjectURL(file),

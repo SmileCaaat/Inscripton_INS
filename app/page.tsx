@@ -48,6 +48,7 @@ import {
   type ApplicationContextMenuItem,
 } from "./application-context-menu";
 import { AssetPreview } from "./asset-preview";
+import { ArchiveView } from "./archive-view";
 import {
   connectWorkspaceDirectory,
   createWorkspaceDeliveryDirectories,
@@ -62,6 +63,7 @@ type Section =
   | "graph"
   | "assets"
   | "boards"
+  | "archive"
   | "narrative"
   | "topics";
 type NodeKind =
@@ -81,6 +83,8 @@ type KnowledgeNode = {
   period: string;
   summary: string;
   tags: string[];
+  source?: string;
+  rights?: string;
   assetCount: number;
   assetIds?: string[];
   x: number;
@@ -249,8 +253,7 @@ const sectionMeta: Array<{
   { id: "boards", label: "参考板", shortcut: "2" },
   { id: "nodes", label: "节点", shortcut: "3" },
   { id: "graph", label: "图谱", shortcut: "4" },
-  { id: "narrative", label: "Narrative", shortcut: "5", disabled: true },
-  { id: "topics", label: "专题", shortcut: "6", disabled: true },
+  { id: "archive", label: "归档", shortcut: "5" },
 ];
 
 const initialNodes: KnowledgeNode[] = [
@@ -1235,6 +1238,8 @@ export default function Home() {
         path: "节点直接导入/",
         kind,
         size: formatBytes(file.size),
+        mimeType: file.type || undefined,
+        fileSize: file.size,
         references: 1,
         previewUrl: URL.createObjectURL(file),
       };
@@ -1952,6 +1957,8 @@ export default function Home() {
         path: path.includes("/") ? `${path.slice(0, path.lastIndexOf("/"))}/` : "新导入/",
         kind,
         size: formatBytes(file.size),
+        mimeType: file.type || undefined,
+        fileSize: file.size,
         references: 0,
         previewUrl: URL.createObjectURL(file),
       };
@@ -2826,20 +2833,12 @@ export default function Home() {
           <button className="button-quiet" type="button" onClick={() => setVersionsOpen(true)}>
             版本记录
           </button>
-          <button
-            className="button-primary"
-            type="button"
-            disabled
-            title="Explorer 功能构思中"
-          >
-            <span>▶</span> Explorer
-          </button>
         </div>
       </header>
 
       <div
         className={`studio-body ${sidebarCollapsed ? "sidebar-collapsed" : ""} ${
-          inspectorOpen && section !== "boards" && section !== "assets"
+          inspectorOpen && section !== "boards" && section !== "assets" && section !== "archive"
             ? ""
             : "inspector-hidden"
         }`}
@@ -2884,34 +2883,6 @@ export default function Home() {
                     <small>{typeCounts[kind]}</small>
                   </button>
                 ))}
-              </div>
-
-              <div
-                className="sidebar-section disabled"
-                aria-disabled="true"
-                title="专题功能完善中"
-              >
-                <div className="sidebar-section-title">
-                  <span>专题</span>
-                  <button type="button" aria-label="新建专题" disabled>＋</button>
-                </div>
-                {topics.slice(0, 5).map((topic, index) => (
-                  <button
-                    className={`topic-link ${index === 0 ? "active" : ""}`}
-                    type="button"
-                    key={topic.id}
-                    disabled
-                  >
-                    <span className={`topic-dot ${index % 3 === 0 ? "rust" : index % 3 === 1 ? "green" : "blue"}`} />
-                    {topic.title}
-                    <small>{topic.nodeCount}</small>
-                  </button>
-                ))}
-                {topics.length === 0 && (
-                  <button className="topic-link empty" type="button" disabled>
-                    ＋ 创建第一个专题
-                  </button>
-                )}
               </div>
 
               <button
@@ -3010,7 +2981,7 @@ export default function Home() {
               <div className="graph-workspace">
                 <div className="graph-intro">
                   <div>
-                    <span>专题知识图谱</span>
+                    <span>工作区知识图谱</span>
                     <h1>{topics[0]?.title ?? activeWorkspace.name}</h1>
                   </div>
                   <div className="graph-intro-actions">
@@ -3645,6 +3616,24 @@ export default function Home() {
               />
             )}
 
+            {section === "archive" && (
+              <ArchiveView
+                workspaceId={activeWorkspace.id}
+                workspaceName={activeWorkspace.name}
+                nodes={nodes}
+                relations={relations}
+                assets={assets}
+                onUpdateAsset={(assetId, patch) =>
+                  setAssets((current) =>
+                    current.map((asset) =>
+                      asset.id === assetId ? { ...asset, ...patch } : asset,
+                    ),
+                  )
+                }
+                onNotice={flash}
+              />
+            )}
+
             {section === "narrative" && (
               <div className="narrative-view">
                 <div className="scene-sidebar">
@@ -3793,7 +3782,7 @@ export default function Home() {
           </div>
         </section>
 
-        {section !== "assets" && section !== "boards" && selectedNode && (
+        {section !== "assets" && section !== "boards" && section !== "archive" && selectedNode && (
           <aside className="inspector-panel">
             <div className="inspector-header">
               <div>
@@ -3853,6 +3842,22 @@ export default function Home() {
                         rows={4}
                         value={selectedNode.summary}
                         onChange={(event) => updateSelectedNode({ summary: event.target.value })}
+                      />
+                    </label>
+                    <label>
+                      <span>来源</span>
+                      <input
+                        value={selectedNode.source ?? ""}
+                        placeholder="文献、馆藏或调查来源"
+                        onChange={(event) => updateSelectedNode({ source: event.target.value })}
+                      />
+                    </label>
+                    <label>
+                      <span>版权</span>
+                      <input
+                        value={selectedNode.rights ?? ""}
+                        placeholder="版权持有人或许可方式"
+                        onChange={(event) => updateSelectedNode({ rights: event.target.value })}
                       />
                     </label>
                     <div className="tag-field">
@@ -4199,7 +4204,7 @@ export default function Home() {
                   onKeyDown={(event) => event.key === "Enter" && createWorkspace()}
                   placeholder="例如：泉州海丝遗产研究"
                 />
-                <small>节点、关系、资源和专题会保存在这个本地工作区中。</small>
+                <small>节点、关系、资源和归档元数据会保存在这个本地工作区中。</small>
               </label>
             ) : (
               <>

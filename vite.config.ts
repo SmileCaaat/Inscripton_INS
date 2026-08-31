@@ -44,9 +44,17 @@ export default defineConfig(async () => {
   const { cloudflare } = await import("@cloudflare/vite-plugin");
 
   return {
-    server: isCodexSeatbeltSandbox
-      ? { watch: { useFsEvents: false, usePolling: true } }
-      : undefined,
+    server: {
+      // Vite enables browser-console forwarding automatically in agent environments.
+      // During an HMR reconnect that forwarder can send before its transport connects,
+      // recursively producing the blocking "send was called before connect" overlay.
+      // Keep normal HMR and its compilation overlay, but do not forward runtime console
+      // events back to the local dev server.
+      forwardConsole: false,
+      ...(isCodexSeatbeltSandbox
+        ? { watch: { useFsEvents: false, usePolling: true } }
+        : {}),
+    },
     plugins: [
       vinext(),
       sites(),
