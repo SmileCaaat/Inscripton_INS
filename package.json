@@ -19,15 +19,23 @@
     "db:generate": "drizzle-kit generate"
   },
   "dependencies": {
+    "@deck.gl/aggregation-layers": "^9.3.11",
+    "@deck.gl/core": "^9.3.11",
+    "@deck.gl/geo-layers": "^9.3.11",
+    "@deck.gl/layers": "^9.3.11",
+    "@deck.gl/mapbox": "^9.3.11",
+    "@paddleocr/paddleocr-js": "^0.4.2",
     "@xyflow/react": "^12.10.2",
     "drizzle-orm": "0.45.2",
     "epubjs": "^0.3.93",
     "jszip": "^3.10.1",
     "mammoth": "^1.12.0",
+    "maplibre-gl": "^6.6.0",
     "next": "^16.2.12",
     "pdfjs-dist": "^6.1.200",
     "react": "19.2.6",
     "react-dom": "19.2.6",
+    "react-map-gl": "^8.1.2",
     "three": "^0.185.1",
     "wavesurfer.js": "^7.12.11",
     "xlsx": "https://cdn.sheetjs.com/xlsx-0.20.3/xlsx-0.20.3.tgz"

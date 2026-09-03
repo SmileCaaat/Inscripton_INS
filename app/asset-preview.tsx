@@ -2,6 +2,7 @@
 
 import dynamic from "next/dynamic";
 import type { ReactNode } from "react";
+import { isEditableTextFile, type TextSaveReason } from "./text-documents";
 
 const ModelPreview = dynamic(
   () => import("./model-preview").then((module) => module.ModelPreview),
@@ -16,6 +17,7 @@ const DocumentMediaPreview = dynamic(
 );
 
 type PreviewAsset = {
+  id: string;
   name: string;
   path: string;
   kind: "image" | "document" | "model" | "video" | "audio" | "text";
@@ -27,6 +29,11 @@ type PreviewAsset = {
 type AssetPreviewProps = {
   asset?: PreviewAsset;
   onDownload: () => void;
+  onSaveText?: (
+    assetId: string,
+    text: string,
+    reason: TextSaveReason,
+  ) => Promise<void> | void;
   action?: ReactNode;
 };
 
@@ -42,12 +49,16 @@ function assetGlyph(kind: PreviewAsset["kind"]) {
 export function AssetPreview({
   asset,
   onDownload,
+  onSaveText,
   action,
 }: AssetPreviewProps) {
+  const editableText = Boolean(asset && isEditableTextFile(asset.name));
+  const stageKind = editableText ? "text" : asset?.kind;
+
   return (
     <>
       <div className="panel-heading">
-        <span>资源预览</span>
+        <span>{editableText ? "资源编辑" : "资源预览"}</span>
         <button
           type="button"
           aria-label="下载当前资源"
@@ -60,7 +71,9 @@ export function AssetPreview({
       </div>
       {asset ? (
         <div className="asset-preview">
-          <div className={`asset-preview-stage asset-${asset.kind}`}>
+          <div
+            className={`asset-preview-stage${stageKind ? ` asset-${stageKind}` : ""}`}
+          >
             {asset.previewUrl && asset.kind === "image" ? (
               <img src={asset.previewUrl} alt={asset.name} />
             ) : asset.previewUrl && asset.kind === "video" ? (
@@ -70,10 +83,13 @@ export function AssetPreview({
             ) : asset.previewUrl &&
               (asset.kind === "document" ||
                 asset.kind === "audio" ||
-                asset.kind === "text") ? (
+                asset.kind === "text" ||
+                editableText) ? (
               <DocumentMediaPreview
+                assetId={asset.id}
                 url={asset.previewUrl}
                 fileName={asset.name}
+                onSaveText={onSaveText}
               />
             ) : asset.kind === "model" ? (
               <div className="model-file-missing">
@@ -100,7 +116,7 @@ export function AssetPreview({
               </div>
               <div>
                 <dt>状态</dt>
-                <dd>本机可用</dd>
+                <dd>{editableText ? "可编辑本机文本" : "本机可用"}</dd>
               </div>
             </dl>
             {action}

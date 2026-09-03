@@ -36,7 +36,9 @@ import {
   ApplicationContextMenu,
   type ApplicationContextMenuItem,
 } from "./application-context-menu";
+import { nativeFilePath } from "./studio-hotkeys";
 import { AssetPreview } from "./asset-preview";
+import type { TextSaveReason } from "./text-documents";
 
 export type BoardAsset = {
   id: string;
@@ -57,6 +59,7 @@ export type BoardAsset = {
   channels?: number;
   fileGroupIds?: string[];
   previewUrl?: string;
+  localPath?: string;
   sourceAssetId?: string;
   cropRegion?: { x: number; y: number; w: number; h: number };
 };
@@ -156,7 +159,10 @@ function fileKind(file: File): BoardAsset["kind"] {
   if (name.endsWith(".glb") || name.endsWith(".gltf") || name.endsWith(".obj") || name.endsWith(".fbx")) {
     return "model";
   }
-  if (file.type.startsWith("text/") || name.endsWith(".md") || name.endsWith(".txt")) {
+  if (
+    file.type.startsWith("text/") ||
+    /\.(md|txt|json|xml|html|css|js|ts)$/i.test(name)
+  ) {
     return "text";
   }
   return "document";
@@ -850,6 +856,12 @@ type ReferenceBoardViewProps = {
   onDeleteAsset: (assetId: string) => void;
   onHydrateAsset: (assetId: string, previewUrl: string) => void;
   onChangeAssetReference: (assetId: string, delta: number) => void;
+  onRevealAsset: (assetId: string) => void;
+  onSaveText?: (
+    assetId: string,
+    text: string,
+    reason: TextSaveReason,
+  ) => Promise<void> | void;
 };
 
 export function ReferenceBoardView({
@@ -864,6 +876,8 @@ export function ReferenceBoardView({
   onDeleteAsset,
   onHydrateAsset,
   onChangeAssetReference,
+  onRevealAsset,
+  onSaveText,
 }: ReferenceBoardViewProps) {
   const storageKey = `inscription-reference-board-v1-${workspaceId}`;
   const [boardTitle, setBoardTitle] = useState(`${workspaceName} · 参考板`);
@@ -1094,6 +1108,7 @@ export function ReferenceBoardView({
           references: 1,
           previewUrl:
             URL.createObjectURL(file),
+          localPath: nativeFilePath(file),
         };
       });
       await Promise.all(
@@ -1415,6 +1430,9 @@ export function ReferenceBoardView({
       } else if (ctrl && key === "d") {
         event.preventDefault();
         duplicateBoardSelection();
+      } else if (key === "f2") {
+        event.preventDefault();
+        if (selectedAssetId) onRenameAsset(selectedAssetId);
       } else if (key === "q") {
         event.preventDefault();
         alignSelectionTop();
@@ -1428,7 +1446,7 @@ export function ReferenceBoardView({
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [alignSelectionTop, createCommentFrame, onChangeAssetReference]);
+  }, [alignSelectionTop, createCommentFrame, onChangeAssetReference, onRenameAsset, selectedAssetId]);
 
   const addExistingAsset = (
     asset: BoardAsset,
@@ -1804,6 +1822,11 @@ export function ReferenceBoardView({
             onSelect: () => downloadBoardAsset(contextAsset),
           },
           {
+            id: "dock-reveal",
+            label: "浏览到本地文件",
+            onSelect: () => onRevealAsset(contextAsset.id),
+          },
+          {
             id: "dock-split",
             label: "图片切图",
             disabled:
@@ -1856,6 +1879,11 @@ export function ReferenceBoardView({
                         label: "下载原文件",
                         disabled: !contextAsset.previewUrl,
                         onSelect: () => downloadBoardAsset(contextAsset),
+                      },
+                      {
+                        id: "reveal",
+                        label: "浏览到本地文件",
+                        onSelect: () => onRevealAsset(contextAsset.id),
                       },
                       {
                         id: "split",
@@ -2128,6 +2156,7 @@ export function ReferenceBoardView({
           <AssetPreview
             asset={activeAsset}
             onDownload={downloadActiveAsset}
+            onSaveText={onSaveText}
             action={
               <button
                 type="button"

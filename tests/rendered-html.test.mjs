@@ -72,7 +72,7 @@ test("core workspace interactions are wired", async () => {
 
   assert.match(
     page,
-    /id: "assets", label: "资源", shortcut: "1"[\s\S]*id: "boards", label: "参考板", shortcut: "2"[\s\S]*id: "nodes", label: "节点", shortcut: "3"[\s\S]*id: "graph", label: "图谱", shortcut: "4"/,
+    /id: "assets", label: "资源", shortcut: "1"[\s\S]*id: "boards", label: "参考板", shortcut: "2"[\s\S]*id: "nodes", label: "节点", shortcut: "3"[\s\S]*id: "graph", label: "图谱", shortcut: "4"[\s\S]*id: "map", label: "地图", shortcut: "5"/,
   );
   assert.match(page, /createWorkspace/);
   assert.match(page, /switchWorkspace/);
@@ -85,10 +85,55 @@ test("core workspace interactions are wired", async () => {
   assert.match(page, /data-node-id=/);
   assert.match(
     page,
-    /id: "archive", label: "归档", shortcut: "5"/,
+    /id: "archive", label: "归档", shortcut: "6"/,
   );
+  assert.match(page, /id: "ocr", label: "OCR", shortcut: "7"/);
   assert.doesNotMatch(page, /label: "Narrative"/);
   assert.doesNotMatch(page, /label: "专题"/);
+});
+
+test("map view places knowledge nodes on MapLibre with deck.gl", async () => {
+  const [page, map, geo, styles, packageJson, viteConfig] = await Promise.all([
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/studio-map.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/geo.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+    readFile(new URL("../package.json", import.meta.url), "utf8"),
+    readFile(new URL("../vite.config.ts", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(page, /id: "map", label: "地图"/);
+  assert.match(page, /StudioMapCanvas/);
+  assert.match(page, /section === "map"/);
+  assert.match(page, /stampSampleNode/);
+  assert.match(page, /longitude: 113\.54072/);
+  assert.match(page, /latitude: 22\.19756/);
+  assert.match(page, /妈阁庙/);
+  assert.match(page, /议事亭前地/);
+  assert.match(page, /澳门历史城区/);
+  assert.match(page, /HISTORIC_CENTRE_RING/);
+  assert.match(page, /yearFrom/);
+  assert.match(page, /updateSelectedNodeGeo/);
+  assert.match(page, /在地图中查看/);
+  assert.doesNotMatch(page, /from "\.\/studio-map"/);
+  assert.match(geo, /export type StudioMapGeo/);
+  assert.match(geo, /polygon\?:/);
+  assert.match(geo, /export function hasMapPolygon/);
+  assert.match(geo, /export function yearsOverlap/);
+  assert.match(map, /react-map-gl\/maplibre/);
+  assert.match(map, /ins-map-heat/);
+  assert.match(map, /TripsLayer/);
+  assert.match(map, /PolygonLayer/);
+  assert.match(map, /时间轴/);
+  assert.match(map, /四种印记/);
+  assert.match(map, /fitBounds/);
+  assert.match(viteConfig, /exclude: \["maplibre-gl"\]/);
+  assert.match(styles, /\.studio-map-timeline/);
+  assert.match(styles, /\.studio-map-inscriptions/);
+  assert.match(packageJson, /"maplibre-gl"/);
+  assert.match(packageJson, /"@deck.gl\/aggregation-layers"/);
+  assert.match(packageJson, /"@deck.gl\/geo-layers"/);
+  assert.match(packageJson, /"react-map-gl"/);
 });
 
 test("node dragging stays local to the canvas until drop", async () => {
@@ -173,6 +218,44 @@ test("assets support managed source files and delivery packages", async () => {
   assert.match(workspaceFiles, /"INS_delivery\.json"/);
 });
 
+test("local file reveal and global edit shortcuts are wired", async () => {
+  const [page, board, workspaceFiles, desktop, preload, main] = await Promise.all([
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/reference-board.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/workspace-files.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/desktop-bridge.ts", import.meta.url), "utf8"),
+    readFile(new URL("../electron/preload.cjs", import.meta.url), "utf8"),
+    readFile(new URL("../electron/main.cjs", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(page, /浏览到本地文件/);
+  assert.match(page, /revealAsset/);
+  assert.match(page, /copySelectedNodes/);
+  assert.match(page, /pasteGraphClipboard/);
+  assert.match(page, /renameSelectedNode/);
+  assert.match(page, /isTypingTarget/);
+  assert.match(page, /revealNodeLocalFile/);
+  assert.match(page, /section === "graph" \|\| section === "boards"/);
+  assert.match(page, /section === "nodes"/);
+  assert.match(page, /section !== "graph" && section !== "nodes"/);
+  assert.match(board, /浏览到本地文件/);
+  assert.match(board, /key === "f2"/);
+  assert.match(board, /onRevealAsset/);
+  assert.match(workspaceFiles, /revealLocalAsset/);
+  assert.match(workspaceFiles, /showOpenFilePicker/);
+  assert.match(workspaceFiles, /startIn/);
+  assert.match(workspaceFiles, /via: "explorer" \| "picker"/);
+  assert.match(page, /已打开「\$\{asset\.name\}」的本机位置/);
+  assert.doesNotMatch(
+    page,
+    /当前浏览器无法打开资源管理器，请使用桌面版浏览本机文件/,
+  );
+  assert.match(workspaceFiles, /inscription-workspace-roots-v1/);
+  assert.match(desktop, /chooseDirectory/);
+  assert.match(preload, /ins:reveal-in-folder/);
+  assert.match(main, /shell.showItemInFolder/);
+});
+
 test("graph supports Q alignment and C comment frames", async () => {
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
 
@@ -181,6 +264,9 @@ test("graph supports Q alignment and C comment frames", async () => {
   assert.match(page, /graphAnnotations/);
   assert.match(page, /Q 对齐/);
   assert.match(page, /C 备注/);
+  assert.match(page, /<kbd>Ctrl\+C<\/kbd>/);
+  assert.match(page, /<kbd>Ctrl\+V<\/kbd>/);
+  assert.match(page, /<kbd>F2<\/kbd>/);
 });
 
 test("local assets use a real Three.js model preview", async () => {
@@ -216,9 +302,78 @@ test("documents, spreadsheets, ebooks, and audio use real local preview engines"
   assert.match(viewer, /PdfPreview/);
   assert.match(viewer, /SpreadsheetPreview/);
   assert.match(viewer, /AudioPreview/);
+  assert.match(viewer, /TextDocumentEditor/);
   assert.match(assetPreview, /DocumentMediaPreview/);
   assert.match(packageJson, /"pdfjs-dist"/);
   assert.match(packageJson, /"wavesurfer\.js"/);
+});
+
+test("text assets can be created and edited as notes or structured data", async () => {
+  const [page, editor, helpers, board, preview] = await Promise.all([
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/text-document-editor.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/text-documents.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/reference-board.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/asset-preview.tsx", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(page, /createBlankTextAsset\("md"\)/);
+  assert.match(page, /createBlankTextAsset\("json"\)/);
+  assert.match(page, /createBlankTextAsset\("txt"\)/);
+  assert.match(page, /saveTextAsset/);
+  assert.match(page, /onSaveText=\{saveTextAsset\}/);
+  assert.match(page, /新建 Markdown 笔记/);
+  assert.match(helpers, /markdownNoteTemplate/);
+  assert.match(helpers, /jsonDataTemplate/);
+  assert.match(helpers, /renderMarkdownToHtml/);
+  assert.match(helpers, /parseJsonDocument/);
+  assert.match(helpers, /EDITABLE_TEXT_EXTENSIONS/);
+  assert.match(editor, /aria-label=\{`\$\{role\}编辑器`\}/);
+  assert.match(editor, /persist\("auto", draft\)/);
+  assert.match(editor, /persist\("manual"/);
+  assert.match(editor, /格式化/);
+  assert.match(editor, /JsonTree/);
+  assert.match(board, /onSaveText/);
+  assert.match(board, /\/\\\.\(md\|txt\|json\|xml\|html\|css\|js\|ts\)\$\/i/);
+  assert.match(preview, /isEditableTextFile/);
+  assert.match(preview, /可编辑本机文本/);
+});
+
+test("OCR keeps local raw geometry separate from human-corrected text", async () => {
+  const [page, panel, service, storage, types, packageJson] = await Promise.all([
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/ocr-panel.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/ocr/ocr-service.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/ocr/ocr-storage.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/ocr/ocr-types.ts", import.meta.url), "utf8"),
+    readFile(new URL("../package.json", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(page, /OCR 文本识别/);
+  assert.match(page, /<OcrPanel/);
+  assert.match(panel, /人工校勘文本/);
+  assert.match(panel, /保存为校勘文本资源/);
+  assert.match(panel, /导出 Markdown/);
+  assert.match(service, /worker: true/);
+  assert.match(service, /numThreads: 2/);
+  assert.match(service, /PP-OCRv5/);
+  assert.match(service, /textDetectionModelAsset/);
+  assert.match(service, /textRecognitionModelAsset/);
+  assert.match(service, /createLocalWasmPaths/);
+  assert.match(service, /wasmPaths: wasmPaths/);
+  assert.match(service, /URL\.createObjectURL/);
+  assert.match(service, /\/ocr-models\//);
+  assert.match(service, /\/ocr-runtime\//);
+  assert.doesNotMatch(service, /https:\/\//);
+  await access(new URL("../public/ocr-models/PP-OCRv5_mobile_det_onnx_infer.tar", import.meta.url));
+  await access(new URL("../public/ocr-models/PP-OCRv5_mobile_rec_onnx_infer.tar", import.meta.url));
+  await access(new URL("../public/ocr-runtime/ort-wasm-simd-threaded.jsep.mjs", import.meta.url));
+  await access(new URL("../public/ocr-runtime/ort-wasm-simd-threaded.jsep.wasm", import.meta.url));
+  assert.match(storage, /indexedDB\.open/);
+  assert.match(types, /rawText/);
+  assert.match(types, /correctedText/);
+  assert.match(types, /polygon/);
+  assert.match(packageJson, /"@paddleocr\/paddleocr-js"/);
 });
 
 test("INS Archive exports five resource kinds with validation and checksums", async () => {

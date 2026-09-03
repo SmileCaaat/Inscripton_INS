@@ -49,23 +49,45 @@ import {
 } from "./application-context-menu";
 import { AssetPreview } from "./asset-preview";
 import { ArchiveView } from "./archive-view";
+import { OcrPanel } from "./ocr-panel";
 import {
   connectWorkspaceDirectory,
   createWorkspaceDeliveryDirectories,
   renameWorkspaceAssetFile,
+  revealLocalAsset,
   supportsWorkspaceDirectoryAccess,
+  workspaceAssetLocalPath,
   workspaceDirectoryIsConnected,
   writeWorkspaceAssetFile,
 } from "./workspace-files";
+import {
+  jsonDataTemplate,
+  markdownNoteTemplate,
+  mimeTypeForTextFile,
+  uniqueAssetFileName,
+  type TextSaveReason,
+} from "./text-documents";
+import { isTypingTarget, nativeFilePath, replacePathFileName } from "./studio-hotkeys";
+import { hasMapLocation, hasMapPolygon, parseCoordinate, parseYear, type StudioMapGeo } from "./geo";
+import {
+  GUIA_ZONE_RING,
+  HISTORIC_CENTRE_RING,
+  RUINS_PRECINCT_RING,
+  SAMPLE_NODE_YEARS,
+  SENADO_SQUARE_RING,
+} from "./sample-map-inscriptions";
 
 type Section =
   | "nodes"
   | "graph"
+  | "map"
   | "assets"
   | "boards"
   | "archive"
+  | "ocr"
   | "narrative"
   | "topics";
+
 type NodeKind =
   | "Space"
   | "Person"
@@ -87,6 +109,9 @@ type KnowledgeNode = {
   rights?: string;
   assetCount: number;
   assetIds?: string[];
+  geo?: StudioMapGeo;
+  yearFrom?: number;
+  yearTo?: number;
   x: number;
   y: number;
 };
@@ -189,6 +214,11 @@ type EditableRelationFlowEdge = FlowEdge<
   "editableRelation"
 >;
 
+type GraphClipboard = {
+  nodes: KnowledgeNode[];
+  relations: Relation[];
+};
+
 type GraphHistoryEntry = {
   workspaceId: string;
   nodes: KnowledgeNode[];
@@ -253,7 +283,9 @@ const sectionMeta: Array<{
   { id: "boards", label: "参考板", shortcut: "2" },
   { id: "nodes", label: "节点", shortcut: "3" },
   { id: "graph", label: "图谱", shortcut: "4" },
-  { id: "archive", label: "归档", shortcut: "5" },
+  { id: "map", label: "地图", shortcut: "5" },
+  { id: "archive", label: "归档", shortcut: "6" },
+  { id: "ocr", label: "OCR", shortcut: "7" },
 ];
 
 const initialNodes: KnowledgeNode[] = [
@@ -268,6 +300,12 @@ const initialNodes: KnowledgeNode[] = [
     tags: ["建筑遗产", "城市空间", "文化记忆"],
     assetCount: 18,
     assetIds: ["asset-1", "asset-2", "asset-6"],
+    geo: {
+      longitude: 113.54072,
+      latitude: 22.19756,
+      confidence: 0.95,
+      polygon: RUINS_PRECINCT_RING,
+    },
     x: 330,
     y: 190,
   },
@@ -282,6 +320,7 @@ const initialNodes: KnowledgeNode[] = [
     tags: ["火灾", "建筑变迁"],
     assetCount: 6,
     assetIds: ["asset-4"],
+    geo: { longitude: 113.54072, latitude: 22.19756, confidence: 0.9 },
     x: 605,
     y: 95,
   },
@@ -324,12 +363,161 @@ const initialNodes: KnowledgeNode[] = [
     tags: ["石构", "建筑装饰"],
     assetCount: 22,
     assetIds: ["asset-1", "asset-2"],
+    geo: { longitude: 113.54086, latitude: 22.19738, confidence: 0.92 },
     x: 610,
     y: 330,
   },
+  {
+    id: "space-monte",
+    kind: "Space",
+    title: "大炮台",
+    subtitle: "圣保禄炮台 · 俯瞰高地",
+    period: "1617—至今",
+    summary:
+      "紧邻大三巴的早期近代化城防，也是理解高地视线、防御与城市制高点的关键场所。",
+    tags: ["城防", "城市制高点"],
+    assetCount: 3,
+    assetIds: [],
+    geo: { longitude: 113.54245, latitude: 22.19728, confidence: 0.93 },
+    x: 470,
+    y: 40,
+  },
+  {
+    id: "space-senado",
+    kind: "Space",
+    title: "议事亭前地",
+    subtitle: "市政广场 · 历史城区核心",
+    period: "16世纪—至今",
+    summary:
+      "澳门半岛的公共礼仪与商业中心，连接大三巴石阶轴线与南部妈阁的城市生活。",
+    tags: ["广场", "城市轴线"],
+    assetCount: 2,
+    assetIds: [],
+    geo: {
+      longitude: 113.53948,
+      latitude: 22.19364,
+      confidence: 0.94,
+      polygon: SENADO_SQUARE_RING,
+    },
+    x: 330,
+    y: 430,
+  },
+  {
+    id: "space-stjoseph",
+    kind: "Space",
+    title: "圣若瑟修院圣堂",
+    subtitle: "岗顶 · 耶稣会修院",
+    period: "1728—至今",
+    summary:
+      "耶稣会在澳门的另一处知识与礼仪空间，可与圣保禄学院遗址对照阅读。",
+    tags: ["修院", "巴洛克"],
+    assetCount: 2,
+    assetIds: [],
+    geo: { longitude: 113.53858, latitude: 22.19228, confidence: 0.91 },
+    x: 80,
+    y: 500,
+  },
+  {
+    id: "space-ama",
+    kind: "Space",
+    title: "妈阁庙",
+    subtitle: "海港祠庙 · 世界遗产点",
+    period: "15世纪—至今",
+    summary:
+      "澳门地名与航海信仰的起点之一，也是历史城区南端最重要的宗教场所。",
+    tags: ["妈祖", "港口"],
+    assetCount: 3,
+    assetIds: [],
+    geo: { longitude: 113.53118, latitude: 22.18612, confidence: 0.96 },
+    x: 330,
+    y: 620,
+  },
+  {
+    id: "space-guia",
+    kind: "Space",
+    title: "东望洋炮台",
+    subtitle: "核心区二 · 灯塔与城防",
+    period: "1622—至今",
+    summary:
+      "半岛东侧制高点，灯塔、教堂与炮台叠合，可回看大三巴高地在城市中的位置。",
+    tags: ["灯塔", "城防"],
+    assetCount: 2,
+    assetIds: [],
+    geo: {
+      longitude: 113.54972,
+      latitude: 22.19661,
+      confidence: 0.93,
+      polygon: GUIA_ZONE_RING,
+    },
+    x: 820,
+    y: 190,
+  },
+  {
+    id: "event-unesco",
+    kind: "Event",
+    title: "2005年列入世界遗产",
+    subtitle: "澳门历史城区",
+    period: "2005.07.15",
+    summary:
+      "“澳门历史城区”列入世界遗产名录，把大三巴、议事亭前地、妈阁庙等地点连成一条可核对的遗产链条。",
+    tags: ["世界遗产", "申报"],
+    assetCount: 1,
+    assetIds: [],
+    geo: { longitude: 113.54035, latitude: 22.19415, confidence: 0.88 },
+    x: 820,
+    y: 430,
+  },
+  {
+    id: "space-historic-centre",
+    kind: "Space",
+    title: "澳门历史城区",
+    subtitle: "核心区一 · 妈阁至大炮台",
+    period: "16世纪—至今",
+    summary:
+      "世界遗产「澳门历史城区」不是一大块行政边界。核心区一是妈阁庙到大炮台的旧城走廊，核心区二是东望洋山，两块加起来大约 16 公顷。图上的多边形是按这条走廊画的示意范围，存在节点的 geo.polygon 里。",
+    tags: ["世界遗产", "历史城区"],
+    assetCount: 0,
+    assetIds: [],
+    geo: {
+      longitude: 113.536,
+      latitude: 22.191,
+      confidence: 0.86,
+      polygon: HISTORIC_CENTRE_RING,
+    },
+    x: 560,
+    y: 520,
+  },
+  {
+    id: "media-ortho",
+    kind: "Media",
+    title: "大三巴立面正射影像",
+    subtitle: "图像印记 · 测绘",
+    period: "2019",
+    summary: "把立面现状图像钉在前壁坐标上，作为可核对的图像印记。",
+    tags: ["正射", "测绘"],
+    assetCount: 1,
+    assetIds: ["asset-1"],
+    geo: { longitude: 113.54086, latitude: 22.19738, confidence: 0.97 },
+    x: 740,
+    y: 330,
+  },
+  {
+    id: "media-print",
+    kind: "Media",
+    title: "1835火灾后遗址版画",
+    subtitle: "图像印记 · 历史图像",
+    period: "1836—19世纪",
+    summary: "火灾之后的视觉记录，落在高地坐标上，用来对照今天的遗存。",
+    tags: ["版画", "历史图像"],
+    assetCount: 1,
+    assetIds: ["asset-4"],
+    geo: { longitude: 113.5406, latitude: 22.1975, confidence: 0.8 },
+    x: 740,
+    y: 95,
+  },
 ];
 
-const relations: Relation[] = [
+const initialRelations: Relation[] = [
   {
     id: "rel-1",
     source: "document-macau",
@@ -364,6 +552,104 @@ const relations: Relation[] = [
     target: "space-ruins",
     type: "构成",
     evidence: "遗产构成说明",
+  },
+  {
+    id: "rel-6",
+    source: "space-ruins",
+    target: "space-monte",
+    type: "毗邻",
+    evidence: "高地城防关系",
+  },
+  {
+    id: "rel-7",
+    source: "space-ruins",
+    target: "space-senado",
+    type: "城市轴线",
+    evidence: "大三巴街—议事亭前地",
+  },
+  {
+    id: "rel-8",
+    source: "person-jesuit",
+    target: "space-stjoseph",
+    type: "营建与使用",
+    evidence: "圣若瑟修院档案",
+  },
+  {
+    id: "rel-9",
+    source: "space-senado",
+    target: "space-stjoseph",
+    type: "相邻",
+    evidence: "岗顶与市政广场",
+  },
+  {
+    id: "rel-10",
+    source: "space-ama",
+    target: "space-senado",
+    type: "城区南北",
+    evidence: "历史城区遗产构成",
+  },
+  {
+    id: "rel-11",
+    source: "space-guia",
+    target: "space-ruins",
+    type: "眺望",
+    evidence: "东望洋—大三巴视线",
+  },
+  {
+    id: "rel-12",
+    source: "event-unesco",
+    target: "space-ruins",
+    type: "列入",
+    evidence: "世界遗产名录：澳门历史城区",
+  },
+  {
+    id: "rel-13",
+    source: "event-unesco",
+    target: "space-ama",
+    type: "列入",
+    evidence: "世界遗产名录：澳门历史城区",
+  },
+  {
+    id: "rel-14",
+    source: "event-unesco",
+    target: "space-senado",
+    type: "列入",
+    evidence: "世界遗产名录：澳门历史城区",
+  },
+  {
+    id: "rel-15",
+    source: "space-historic-centre",
+    target: "space-ruins",
+    type: "包含",
+    evidence: "澳门历史城区遗产构成",
+  },
+  {
+    id: "rel-16",
+    source: "space-historic-centre",
+    target: "space-ama",
+    type: "包含",
+    evidence: "澳门历史城区遗产构成",
+  },
+  {
+    id: "rel-17",
+    source: "space-historic-centre",
+    target: "space-senado",
+    type: "包含",
+    evidence: "澳门历史城区遗产构成",
+  },
+  {
+    id: "rel-18",
+    source: "media-ortho",
+    target: "artifact-facade",
+    type: "图像记录",
+    evidence: "立面正射影像",
+  },
+  {
+    id: "rel-19",
+    source: "media-print",
+    target: "event-fire",
+    type: "图像记录",
+    evidence: "火灾后遗址版画",
   },
 ];
 
@@ -490,16 +776,23 @@ const blankScene: NarrativeScene = {
   layout: "hero",
 };
 
+function stampSampleNode(node: KnowledgeNode): KnowledgeNode {
+  const years = SAMPLE_NODE_YEARS[node.id];
+  return {
+    ...node,
+    tags: [...node.tags],
+    assetIds: [...(node.assetIds ?? [])],
+    yearFrom: node.yearFrom ?? years?.yearFrom,
+    yearTo: node.yearTo ?? years?.yearTo,
+  };
+}
+
 function createInitialWorkspace(): WorkspaceRecord {
   return {
     id: "workspace-ruins",
     name: "大三巴高地研究",
-    nodes: initialNodes.map((node) => ({
-      ...node,
-      tags: [...node.tags],
-      assetIds: [...(node.assetIds ?? [])],
-    })),
-    relations: relations.map((relation) => ({ ...relation })),
+    nodes: initialNodes.map((node) => stampSampleNode(node)),
+    relations: initialRelations.map((relation) => ({ ...relation })),
     assets: initialAssets.map((asset) => ({ ...asset })),
     scenes: initialScenes.map((scene) => ({ ...scene })),
     topics: initialTopics.map((topic) => ({ ...topic })),
@@ -832,6 +1125,30 @@ const ReactFlowCanvas = dynamic(
   { ssr: false },
 );
 
+const StudioMapCanvas = dynamic(
+  () => import("./studio-map").then((module) => module.StudioMapView),
+  {
+    ssr: false,
+    loading: () => (
+      <div className="studio-map-view">
+        <div className="graph-intro">
+          <div>
+            <span>INS MAP</span>
+            <h1>四种印记</h1>
+          </div>
+        </div>
+        <div className="studio-map-canvas">
+          <div className="studio-map-empty">
+            <span>LOADING MAP</span>
+            <h2>正在载入地图</h2>
+            <p>MapLibre 底图与 deck.gl 图层会在客户端加载。</p>
+          </div>
+        </div>
+      </div>
+    ),
+  },
+);
+
 function ExplorerView({
   sceneIndex,
   scenes,
@@ -1005,6 +1322,9 @@ export default function Home() {
   const historyFuture = useRef<GraphHistoryEntry[]>([]);
   const nodeDragActive = useRef(false);
   const hydratedAssetIds = useRef(new Set<string>());
+  const assetsRef = useRef<AssetItem[]>([]);
+  const activeWorkspaceIdRef = useRef(activeWorkspaceId);
+  const graphClipboard = useRef<GraphClipboard | null>(null);
 
   const refreshHistoryAvailability = () => {
     setHistoryAvailability({
@@ -1122,12 +1442,47 @@ export default function Home() {
     () => new Set(visibleNodes.map((node) => node.id)),
     [visibleNodes],
   );
+  const mapNodes = useMemo(
+    () =>
+      visibleNodes.map((node) => ({
+        id: node.id,
+        kind: node.kind,
+        title: node.title,
+        subtitle: node.subtitle,
+        period: node.period,
+        color: kindMeta[node.kind].color,
+        geo: node.geo,
+        yearFrom: node.yearFrom,
+        yearTo: node.yearTo,
+      })),
+    [visibleNodes],
+  );
+  const mapRelations = useMemo(
+    () =>
+      relations.map((relation) => ({
+        id: relation.id,
+        source: relation.source,
+        target: relation.target,
+        type: relation.type,
+      })),
+    [relations],
+  );
+  const selectMapNode = useCallback((nodeId: string) => {
+    setSelectedNodeId(nodeId);
+    setSelectedNodeIds([nodeId]);
+    setInspectorOpen(true);
+  }, []);
 
   const flash = (message: string) => {
     setNotice(message);
     if (noticeTimer.current) clearTimeout(noticeTimer.current);
     noticeTimer.current = setTimeout(() => setNotice("工作区已自动保存"), 2400);
   };
+
+  useEffect(() => {
+    assetsRef.current = assets;
+    activeWorkspaceIdRef.current = activeWorkspaceId;
+  }, [activeWorkspaceId, assets]);
 
   const createGraphSnapshot = (): GraphHistoryEntry => ({
     workspaceId: activeWorkspaceId,
@@ -1242,6 +1597,7 @@ export default function Home() {
         fileSize: file.size,
         references: 1,
         previewUrl: URL.createObjectURL(file),
+        localPath: nativeFilePath(file),
       };
     });
     await Promise.all(
@@ -1439,10 +1795,59 @@ export default function Home() {
 
   const downloadSelectedAsset = () => downloadAsset(selectedAsset);
 
+  const revealAsset = async (assetId: string) => {
+    const asset = assets.find((item) => item.id === assetId);
+    if (!asset) return;
+    let result = await revealLocalAsset(activeWorkspaceId, asset);
+    if (!result.ok && result.reason === "unavailable") {
+      try {
+        const connected = await connectWorkspaceDirectory(activeWorkspaceId);
+        if (!connected) return;
+        setWorkspaceDirectoryConnected(true);
+        result = await revealLocalAsset(activeWorkspaceId, asset);
+      } catch (error) {
+        if (error instanceof DOMException && error.name === "AbortError") {
+          return;
+        }
+        flash("无法打开本机文件位置");
+        return;
+      }
+    }
+    if (result.ok) {
+      flash(
+        result.via === "picker"
+          ? `已打开「${asset.name}」的本机位置`
+          : `已在资源管理器中打开「${asset.name}」`,
+      );
+      return;
+    }
+    if (result.reason === "unsupported") {
+      flash("当前浏览器不支持打开本机文件位置");
+      return;
+    }
+    if (result.reason === "missing") {
+      flash("未找到本机源文件，请确认文件仍在原位置或先连接工作区");
+      return;
+    }
+    flash("尚未记录本机路径。请选择本机文件夹后再试");
+  };
+
+  const revealNodeLocalFile = (nodeId: string) => {
+    const node = nodes.find((item) => item.id === nodeId);
+    const firstAssetId = node?.assetIds?.[0];
+    if (!firstAssetId) {
+      flash("该节点尚未关联数字资源");
+      return;
+    }
+    void revealAsset(firstAssetId);
+    setGraphContextMenu(null);
+  };
+
   const copyAsset = (assetId: string) => {
     const asset = assets.find((item) => item.id === assetId);
     if (!asset) return;
     setAssetClipboardId(assetId);
+    setAssetContextMenu(null);
     flash(`已复制资源「${asset.name}」`);
   };
 
@@ -1474,7 +1879,17 @@ export default function Home() {
       name: duplicateAssetName(source.name),
       references: 0,
       previewUrl,
+      localPath: undefined,
     };
+    try {
+      const workspacePath = await workspaceAssetLocalPath(
+        activeWorkspaceId,
+        duplicated,
+      );
+      if (workspacePath) duplicated.localPath = workspacePath;
+    } catch {
+      // Keep metadata-only duplicates without a local path.
+    }
     commitGraphHistory();
     setAssets((current) => [duplicated, ...current]);
     setSelectedAssetId(id);
@@ -1541,7 +1956,15 @@ export default function Home() {
     commitGraphHistory();
     setAssets((current) =>
       current.map((item) =>
-        item.id === assetId ? { ...item, name: nextName } : item,
+        item.id === assetId
+          ? {
+              ...item,
+              name: nextName,
+              localPath: item.localPath
+                ? replacePathFileName(item.localPath, nextName)
+                : item.localPath,
+            }
+          : item,
       ),
     );
     flash(
@@ -1645,6 +2068,36 @@ export default function Home() {
     flash(`已删除资源「${asset.name}」`);
   };
 
+  const createCorrectedOcrText = async (
+    source: AssetItem,
+    document: import("./ocr/ocr-types").OcrDocumentResult,
+  ) => {
+    const text = document.pages.map((page) => page.correctedText ?? page.rawText).join("\n\n");
+    if (!text.trim()) return;
+    const id = `ocr-text-${crypto.randomUUID()}`;
+    const name = `${source.name.replace(/\.[^.]+$/, "")}-校勘文本.md`;
+    const blob = new Blob([`# ${source.name}\n\n${text}`], { type: "text/markdown;charset=utf-8" });
+    await storeLocalAssetBlob(id, blob);
+    const asset: AssetItem = {
+      id,
+      name,
+      path: `${source.path}OCR/`,
+      kind: "text",
+      size: formatBytes(blob.size),
+      fileSize: blob.size,
+      mimeType: blob.type,
+      references: 0,
+      sourceAssetId: source.id,
+      previewUrl: URL.createObjectURL(blob),
+      description: `由「${source.name}」OCR 识别后人工校勘生成。`,
+    };
+    await writeWorkspaceAssetFile(activeWorkspaceId, asset, blob).catch(() => false);
+    asset.localPath = await workspaceAssetLocalPath(activeWorkspaceId, asset);
+    setAssets((current) => [asset, ...current]);
+    setSelectedAssetId(id);
+    flash("已创建校勘文本资源；其来源关系已保留");
+  };
+
   useEffect(() => {
     const preventBrowserContextMenu = (event: MouseEvent) => {
       event.preventDefault();
@@ -1655,16 +2108,11 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
-    if (section !== "assets") return;
     const onAssetKeyDown = (event: KeyboardEvent) => {
-      const target = event.target;
-      if (
-        target instanceof HTMLElement &&
-        (target.isContentEditable ||
-          ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName))
-      ) {
-        return;
-      }
+      if (explorer || dialog) return;
+      if (section === "graph" || section === "boards" || section === "map") return;
+      if (section === "nodes") return;
+      if (isTypingTarget(event.target)) return;
       const ctrl = event.ctrlKey || event.metaKey;
       const key = event.key.toLowerCase();
       if (ctrl && key === "c" && selectedAsset) {
@@ -1687,7 +2135,7 @@ export default function Home() {
         redoGraph();
       } else if (key === "f2" && selectedAsset) {
         event.preventDefault();
-        renameAsset(selectedAsset.id);
+        void renameAsset(selectedAsset.id);
       } else if (
         (event.key === "Delete" || event.key === "Backspace") &&
         selectedAsset
@@ -1698,7 +2146,15 @@ export default function Home() {
     };
     window.addEventListener("keydown", onAssetKeyDown);
     return () => window.removeEventListener("keydown", onAssetKeyDown);
-  }, [assetClipboardId, section, selectedAsset]);
+  }, [
+    assetClipboardId,
+    dialog,
+    explorer,
+    section,
+    selectedAsset,
+    selectedNode,
+    selectedNodeIds,
+  ]);
 
   useEffect(() => {
     if (window.innerWidth <= 900) setInspectorOpen(false);
@@ -1722,17 +2178,57 @@ export default function Home() {
             const sampleNodeAssets = new Map(
               initialNodes.map((node) => [node.id, node.assetIds ?? []]),
             );
+            const knownNodeIds = new Set(workspace.nodes.map((node) => node.id));
+            const knownRelationIds = new Set(
+              workspace.relations.map((relation) => relation.id),
+            );
             const knownAssetIds = new Set(workspace.assets.map((asset) => asset.id));
-            return {
-              ...workspace,
-              graphAnnotations: workspace.graphAnnotations ?? [],
-              deliveryPackages: workspace.deliveryPackages ?? [],
-              nodes: workspace.nodes.map((node) => ({
+            const mergedNodes = workspace.nodes.map((node) => {
+              const sample = initialNodes.find((item) => item.id === node.id);
+              const years = SAMPLE_NODE_YEARS[node.id];
+              const geo =
+                sample?.geo || node.geo
+                  ? {
+                      ...(sample?.geo ?? {}),
+                      ...(node.geo ?? {}),
+                      polygon:
+                        workspace.id === "workspace-ruins" && sample?.geo?.polygon
+                          ? sample.geo.polygon
+                          : (node.geo?.polygon ?? sample?.geo?.polygon),
+                    }
+                  : node.geo;
+              return {
                 ...node,
                 assetIds: [
                   ...(node.assetIds ?? sampleNodeAssets.get(node.id) ?? []),
                 ],
-              })),
+                geo,
+                yearFrom: node.yearFrom ?? sample?.yearFrom ?? years?.yearFrom,
+                yearTo: node.yearTo ?? sample?.yearTo ?? years?.yearTo,
+              };
+            });
+            return {
+              ...workspace,
+              graphAnnotations: workspace.graphAnnotations ?? [],
+              deliveryPackages: workspace.deliveryPackages ?? [],
+              nodes:
+                workspace.id === "workspace-ruins"
+                  ? [
+                      ...mergedNodes,
+                      ...initialNodes
+                        .filter((node) => !knownNodeIds.has(node.id))
+                        .map((node) => stampSampleNode(node)),
+                    ]
+                  : mergedNodes,
+              relations:
+                workspace.id === "workspace-ruins"
+                  ? [
+                      ...workspace.relations,
+                      ...initialRelations.filter(
+                        (relation) => !knownRelationIds.has(relation.id),
+                      ),
+                    ]
+                  : workspace.relations,
               assets:
                 workspace.id === "workspace-ruins"
                   ? [
@@ -1887,8 +2383,8 @@ export default function Home() {
       return;
     }
     try {
-      const handle = await connectWorkspaceDirectory(activeWorkspaceId);
-      if (!handle) return;
+      const connected = await connectWorkspaceDirectory(activeWorkspaceId);
+      if (!connected) return;
       setWorkspaceDirectoryConnected(true);
       let copied = 0;
       for (const asset of assets) {
@@ -1961,22 +2457,139 @@ export default function Home() {
         fileSize: file.size,
         references: 0,
         previewUrl: URL.createObjectURL(file),
+        localPath: nativeFilePath(file),
       };
     });
     await Promise.all(
       additions.map(async (asset, index) => {
         await storeLocalAssetBlob(asset.id, files[index].file);
-        await writeWorkspaceAssetFile(
+        const written = await writeWorkspaceAssetFile(
           activeWorkspaceId,
           asset,
           files[index].file,
         ).catch(() => false);
+        if (written) {
+          asset.localPath =
+            (await workspaceAssetLocalPath(activeWorkspaceId, asset)) ??
+            asset.localPath;
+        }
       }),
     );
     setAssets((current) => [...additions, ...current]);
     setSelectedAssetId(additions[0].id);
     setSection("assets");
     flash(`已导入 ${files.length} 个资源`);
+  };
+
+  const saveTextAsset = useCallback(
+    async (assetId: string, text: string, reason: TextSaveReason) => {
+      const asset = assetsRef.current.find((item) => item.id === assetId);
+      if (!asset) return;
+      const blob = new Blob([text], {
+        type: mimeTypeForTextFile(asset.name),
+      });
+      await storeLocalAssetBlob(assetId, blob);
+      await writeWorkspaceAssetFile(
+        activeWorkspaceIdRef.current,
+        asset,
+        blob,
+      ).catch(() => false);
+      if (asset.previewUrl?.startsWith("blob:")) {
+        URL.revokeObjectURL(asset.previewUrl);
+      }
+      const previewUrl = URL.createObjectURL(blob);
+      const workspaceId = activeWorkspaceIdRef.current;
+      setWorkspaces((current) =>
+        current.map((workspace) =>
+          workspace.id === workspaceId
+            ? {
+                ...workspace,
+                assets: workspace.assets.map((item) =>
+                  item.id === assetId
+                    ? {
+                        ...item,
+                        size: formatBytes(blob.size),
+                        fileSize: blob.size,
+                        mimeType: blob.type,
+                        previewUrl,
+                      }
+                    : item,
+                ),
+              }
+            : workspace,
+        ),
+      );
+      if (reason === "manual") {
+        flash(`已保存「${asset.name}」`);
+      }
+    },
+    [],
+  );
+
+  const createBlankTextAsset = async (kind: "md" | "json" | "txt") => {
+    const presets = {
+      md: {
+        title: "新建 Markdown 笔记",
+        defaultName: "研究笔记",
+        path: "研究笔记/",
+      },
+      json: {
+        title: "新建 JSON 数据",
+        defaultName: "数据记录",
+        path: "结构化数据/",
+      },
+      txt: {
+        title: "新建文本",
+        defaultName: "文本",
+        path: "文本/",
+      },
+    } as const;
+    const preset = presets[kind];
+    const entered = window.prompt(preset.title, preset.defaultName)?.trim();
+    if (!entered) return;
+    if (/[<>:"/\\|?*\u0000-\u001f]/.test(entered)) {
+      flash("资源名称不能包含系统保留字符");
+      return;
+    }
+    const baseName = entered.replace(/\.(md|json|txt)$/i, "");
+    const name = uniqueAssetFileName(
+      assetsRef.current,
+      preset.path,
+      baseName,
+      `.${kind}`,
+    );
+    const text =
+      kind === "md"
+        ? markdownNoteTemplate(baseName)
+        : kind === "json"
+          ? jsonDataTemplate(baseName)
+          : `${baseName}\n`;
+    const id = `text-${crypto.randomUUID()}`;
+    const blob = new Blob([text], { type: mimeTypeForTextFile(name) });
+    await storeLocalAssetBlob(id, blob);
+    const asset: AssetItem = {
+      id,
+      name,
+      path: preset.path,
+      kind: "text",
+      size: formatBytes(blob.size),
+      fileSize: blob.size,
+      mimeType: blob.type,
+      references: 0,
+      previewUrl: URL.createObjectURL(blob),
+    };
+    await writeWorkspaceAssetFile(
+      activeWorkspaceIdRef.current,
+      asset,
+      blob,
+    ).catch(() => false);
+    asset.localPath =
+      (await workspaceAssetLocalPath(activeWorkspaceIdRef.current, asset)) ??
+      asset.localPath;
+    setAssets((current) => [asset, ...current]);
+    setSelectedAssetId(id);
+    setSection("assets");
+    flash(`已创建「${name}」`);
   };
 
   const handleDrop = async (event: DragEvent<HTMLDivElement>) => {
@@ -2129,6 +2742,32 @@ export default function Home() {
     setNodes((current) =>
       current.map((node) => (node.id === selectedNodeId ? { ...node, ...patch } : node)),
     );
+  };
+
+  const updateSelectedNodeGeo = (
+    field: "longitude" | "latitude" | "confidence",
+    raw: string,
+  ) => {
+    if (!selectedNode) return;
+    const parsed = parseCoordinate(raw);
+    const current = selectedNode.geo ?? {};
+    if (field === "confidence") {
+      if (!hasMapLocation(current) && parsed == null) return;
+      updateSelectedNode({
+        geo: {
+          ...current,
+          confidence:
+            parsed == null ? undefined : Math.min(1, Math.max(0, parsed)),
+        },
+      });
+      return;
+    }
+    updateSelectedNode({
+      geo: {
+        ...current,
+        [field]: parsed,
+      },
+    });
   };
 
   const openWorkspaceDialog = () => {
@@ -2380,6 +3019,90 @@ export default function Home() {
     flash(`已复制 ${copies.length} 个节点`);
   };
 
+  const copySelectedNodes = () => {
+    const sourceNodes = nodes.filter((node) => selectedNodeIds.includes(node.id));
+    if (sourceNodes.length === 0) return;
+    graphClipboard.current = {
+      nodes: sourceNodes.map((node) => ({
+        ...node,
+        tags: [...node.tags],
+        assetIds: [...(node.assetIds ?? [])],
+      })),
+      relations: relations
+        .filter(
+          (relation) =>
+            selectedNodeIds.includes(relation.source) &&
+            selectedNodeIds.includes(relation.target),
+        )
+        .map((relation) => ({ ...relation })),
+    };
+    setGraphContextMenu(null);
+    flash(`已复制 ${sourceNodes.length} 个节点`);
+  };
+
+  const pasteGraphClipboard = () => {
+    const clipboard = graphClipboard.current;
+    if (!clipboard || clipboard.nodes.length === 0) return;
+    commitGraphHistory();
+    const idMap = new Map(
+      clipboard.nodes.map((node, index) => [
+        node.id,
+        `${node.id}-paste-${Date.now()}-${index}`,
+      ]),
+    );
+    const copies = clipboard.nodes.map((node) => ({
+      ...node,
+      id: idMap.get(node.id)!,
+      title: `${node.title} 副本`,
+      tags: [...node.tags],
+      assetIds: [...(node.assetIds ?? [])],
+      x: node.x + 48,
+      y: node.y + 48,
+    }));
+    const copiedRelations = clipboard.relations
+      .filter(
+        (relation) => idMap.has(relation.source) && idMap.has(relation.target),
+      )
+      .map((relation, index) => ({
+        ...relation,
+        id: `relation-paste-${Date.now()}-${index}`,
+        source: idMap.get(relation.source)!,
+        target: idMap.get(relation.target)!,
+      }));
+    updateActiveWorkspace((workspace) => ({
+      ...workspace,
+      nodes: [...workspace.nodes, ...copies],
+      relations: [...workspace.relations, ...copiedRelations],
+      assets: workspace.assets.map((asset) => ({
+        ...asset,
+        references:
+          asset.references +
+          copies.filter((node) => node.assetIds?.includes(asset.id)).length,
+      })),
+    }));
+    const copyIds = copies.map((node) => node.id);
+    setSelectedNodeIds(copyIds);
+    setSelectedNodeId(copyIds.at(-1) ?? "");
+    setGraphContextMenu(null);
+    flash(`已粘贴 ${copies.length} 个节点`);
+  };
+
+  const renameSelectedNode = () => {
+    const node = nodes.find((item) => item.id === selectedNodeId);
+    if (!node) return;
+    const nextTitle = window.prompt("重命名节点", node.title)?.trim();
+    if (!nextTitle || nextTitle === node.title) return;
+    commitGraphHistory();
+    updateActiveWorkspace((workspace) => ({
+      ...workspace,
+      nodes: workspace.nodes.map((item) =>
+        item.id === node.id ? { ...item, title: nextTitle } : item,
+      ),
+    }));
+    setGraphContextMenu(null);
+    flash(`已重命名为「${nextTitle}」`);
+  };
+
   const disconnectSelectedNodes = () => {
     if (selectedNodeIds.length === 0) return;
     const idSet = new Set(selectedNodeIds);
@@ -2568,24 +3291,28 @@ export default function Home() {
   };
 
   useEffect(() => {
-    if (section !== "graph") return;
+    if (section !== "graph" && section !== "nodes") return;
     const onGraphKeyDown = (event: KeyboardEvent) => {
-      const target = event.target;
-      if (
-        target instanceof HTMLElement &&
-        (target.isContentEditable ||
-          ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName))
-      ) {
-        return;
-      }
+      if (explorer || dialog) return;
+      if (isTypingTarget(event.target)) return;
       const ctrl = event.ctrlKey || event.metaKey;
       const key = event.key.toLowerCase();
 
-      if (ctrl && key === "a") {
+      if (section === "graph" && ctrl && key === "a") {
         event.preventDefault();
         const ids = visibleNodes.map((node) => node.id);
         setSelectedNodeIds(ids);
         setSelectedNodeId(ids.at(-1) ?? "");
+        return;
+      }
+      if (ctrl && key === "c") {
+        event.preventDefault();
+        copySelectedNodes();
+        return;
+      }
+      if (ctrl && key === "v") {
+        event.preventDefault();
+        pasteGraphClipboard();
         return;
       }
       if (ctrl && key === "d") {
@@ -2603,12 +3330,17 @@ export default function Home() {
         redoGraph();
         return;
       }
-      if (key === "q" && !ctrl) {
+      if (key === "f2") {
+        event.preventDefault();
+        renameSelectedNode();
+        return;
+      }
+      if (section === "graph" && key === "q" && !ctrl) {
         event.preventDefault();
         alignSelectedGraphItems();
         return;
       }
-      if (key === "c" && !ctrl) {
+      if (section === "graph" && key === "c" && !ctrl) {
         event.preventDefault();
         createGraphAnnotation();
         return;
@@ -2655,6 +3387,15 @@ export default function Home() {
           },
         },
         {
+          id: "ocr",
+          label: "OCR 文本识别",
+          disabled: assetMenuTarget.kind !== "image",
+          onSelect: () => {
+            setSelectedAssetId(assetMenuTarget.id);
+            setSection("ocr");
+          },
+        },
+        {
           id: "delivery-package",
           label: "创建交付包",
           disabled: assetMenuTarget.kind !== "model",
@@ -2694,6 +3435,11 @@ export default function Home() {
           disabled: !assetMenuTarget.previewUrl,
           onSelect: () => downloadAsset(assetMenuTarget),
         },
+        {
+          id: "reveal",
+          label: "浏览到本地文件",
+          onSelect: () => void revealAsset(assetMenuTarget.id),
+        },
         { id: "asset-separator-2", label: "", separator: true },
         {
           id: "undo",
@@ -2727,6 +3473,21 @@ export default function Home() {
           id: "import",
           label: "导入文件或目录",
           onSelect: () => directoryInput.current?.click(),
+        },
+        {
+          id: "new-markdown",
+          label: "新建 Markdown 笔记",
+          onSelect: () => void createBlankTextAsset("md"),
+        },
+        {
+          id: "new-json",
+          label: "新建 JSON 数据",
+          onSelect: () => void createBlankTextAsset("json"),
+        },
+        {
+          id: "new-text",
+          label: "新建文本",
+          onSelect: () => void createBlankTextAsset("txt"),
         },
         {
           id: "paste",
@@ -2838,7 +3599,11 @@ export default function Home() {
 
       <div
         className={`studio-body ${sidebarCollapsed ? "sidebar-collapsed" : ""} ${
-          inspectorOpen && section !== "boards" && section !== "assets" && section !== "archive"
+          inspectorOpen &&
+          section !== "boards" &&
+          section !== "assets" &&
+          section !== "archive" &&
+          section !== "ocr"
             ? ""
             : "inspector-hidden"
         }`}
@@ -3137,6 +3902,16 @@ export default function Home() {
                                 flash("请先选择一个节点，再点击或拖入资产");
                               }
                             }}
+                            onContextMenu={(event) => {
+                              event.preventDefault();
+                              event.stopPropagation();
+                              setSelectedAssetId(asset.id);
+                              setAssetContextMenu({
+                                x: event.clientX,
+                                y: event.clientY,
+                                assetId: asset.id,
+                              });
+                            }}
                           >
                             <span className={`asset-${asset.kind}`}>{assetGlyph(asset.kind)}</span>
                             <small>{asset.name}</small>
@@ -3184,6 +3959,15 @@ export default function Home() {
               </div>
             )}
 
+            {section === "map" && (
+              <StudioMapCanvas
+                nodes={mapNodes}
+                relations={mapRelations}
+                selectedNodeId={selectedNodeId}
+                onSelectNode={selectMapNode}
+              />
+            )}
+
             {section === "nodes" && (
               <div className="nodes-view">
                 <div className="section-hero compact">
@@ -3196,7 +3980,17 @@ export default function Home() {
                     ＋ 创建 Node
                   </button>
                 </div>
-                <div className="node-table">
+                <div
+                  className="node-table"
+                  onContextMenu={(event) => {
+                    event.preventDefault();
+                    setGraphContextMenu({
+                      x: event.clientX,
+                      y: event.clientY,
+                      nodeId: null,
+                    });
+                  }}
+                >
                   <div className="node-table-header">
                     <span>节点</span>
                     <span>类型</span>
@@ -3212,6 +4006,17 @@ export default function Home() {
                       onClick={() => {
                         setSelectedNodeId(node.id);
                         setSelectedNodeIds([node.id]);
+                      }}
+                      onContextMenu={(event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        setSelectedNodeId(node.id);
+                        setSelectedNodeIds([node.id]);
+                        setGraphContextMenu({
+                          x: event.clientX,
+                          y: event.clientY,
+                          nodeId: node.id,
+                        });
                       }}
                     >
                       <span className="node-table-name">
@@ -3345,9 +4150,23 @@ export default function Home() {
                       <span>↓</span>
                       <strong>拖入文件或整个目录</strong>
                       <small>文件将复制到当前 Workspace</small>
-                      <button type="button" onClick={() => directoryInput.current?.click()}>
-                        选择目录
-                      </button>
+                      <div className="drop-zone-actions">
+                        <button type="button" onClick={() => directoryInput.current?.click()}>
+                          选择目录
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void createBlankTextAsset("md")}
+                        >
+                          新建笔记
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void createBlankTextAsset("json")}
+                        >
+                          新建 JSON
+                        </button>
+                      </div>
                       <input
                         ref={directoryInput}
                         type="file"
@@ -3527,6 +4346,7 @@ export default function Home() {
                     <AssetPreview
                       asset={selectedAsset}
                       onDownload={downloadSelectedAsset}
+                      onSaveText={saveTextAsset}
                       action={
                         <button
                           type="button"
@@ -3589,13 +4409,23 @@ export default function Home() {
                   void Promise.all(
                     createdAssets.map(async (asset) => {
                       const blob = await readLocalAssetBlob(asset.id);
-                      if (blob) {
-                        await writeWorkspaceAssetFile(
-                          activeWorkspaceId,
-                          asset,
-                          blob,
-                        ).catch(() => false);
-                      }
+                      if (!blob) return;
+                      const written = await writeWorkspaceAssetFile(
+                        activeWorkspaceId,
+                        asset,
+                        blob,
+                      ).catch(() => false);
+                      if (!written) return;
+                      const localPath = await workspaceAssetLocalPath(
+                        activeWorkspaceId,
+                        asset,
+                      );
+                      if (!localPath) return;
+                      setAssets((current) =>
+                        current.map((item) =>
+                          item.id === asset.id ? { ...item, localPath } : item,
+                        ),
+                      );
                     }),
                   );
                   setSelectedAssetId(createdAssets[0].id);
@@ -3613,6 +4443,8 @@ export default function Home() {
                     ),
                   );
                 }}
+                onRevealAsset={(assetId) => void revealAsset(assetId)}
+                onSaveText={saveTextAsset}
               />
             )}
 
@@ -3629,6 +4461,16 @@ export default function Home() {
                       asset.id === assetId ? { ...asset, ...patch } : asset,
                     ),
                   )
+                }
+                onNotice={flash}
+              />
+            )}
+
+            {section === "ocr" && (
+              <OcrPanel
+                asset={selectedAsset}
+                onCreateCorrectedText={(source, document) =>
+                  void createCorrectedOcrText(source as AssetItem, document)
                 }
                 onNotice={flash}
               />
@@ -3837,6 +4679,71 @@ export default function Home() {
                       />
                     </label>
                     <label>
+                      <span>起年</span>
+                      <input
+                        inputMode="numeric"
+                        placeholder="1602"
+                        value={selectedNode.yearFrom ?? ""}
+                        onChange={(event) =>
+                          updateSelectedNode({ yearFrom: parseYear(event.target.value) })
+                        }
+                      />
+                    </label>
+                    <label>
+                      <span>迄年</span>
+                      <input
+                        inputMode="numeric"
+                        placeholder="2026"
+                        value={selectedNode.yearTo ?? ""}
+                        onChange={(event) =>
+                          updateSelectedNode({ yearTo: parseYear(event.target.value) })
+                        }
+                      />
+                    </label>
+                    <label>
+                      <span>经度</span>
+                      <input
+                        inputMode="decimal"
+                        placeholder="113.54072"
+                        value={selectedNode.geo?.longitude ?? ""}
+                        onChange={(event) =>
+                          updateSelectedNodeGeo("longitude", event.target.value)
+                        }
+                      />
+                    </label>
+                    <label>
+                      <span>纬度</span>
+                      <input
+                        inputMode="decimal"
+                        placeholder="22.19756"
+                        value={selectedNode.geo?.latitude ?? ""}
+                        onChange={(event) =>
+                          updateSelectedNodeGeo("latitude", event.target.value)
+                        }
+                      />
+                    </label>
+                    <label>
+                      <span>坐标可信度 0–1</span>
+                      <input
+                        inputMode="decimal"
+                        placeholder="0.9"
+                        value={selectedNode.geo?.confidence ?? ""}
+                        onChange={(event) =>
+                          updateSelectedNodeGeo("confidence", event.target.value)
+                        }
+                      />
+                    </label>
+                    {(hasMapLocation(selectedNode.geo) ||
+                      hasMapPolygon(selectedNode.geo)) && (
+                      <button
+                        type="button"
+                        className="button-quiet"
+                        onClick={() => setSection("map")}
+                      >
+                        在地图中查看
+                      </button>
+                    )}
+                    <label>
                       <span>摘要</span>
                       <textarea
                         rows={4}
@@ -3929,10 +4836,24 @@ export default function Home() {
                 </div>
                 <div className="mini-assets">
                   {selectedNodeAssets.map((asset) => (
-                    <button type="button" key={asset.id} onClick={() => {
-                      setSelectedAssetId(asset.id);
-                      setSection("assets");
-                    }}>
+                    <button
+                      type="button"
+                      key={asset.id}
+                      onClick={() => {
+                        setSelectedAssetId(asset.id);
+                        setSection("assets");
+                      }}
+                      onContextMenu={(event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        setSelectedAssetId(asset.id);
+                        setAssetContextMenu({
+                          x: event.clientX,
+                          y: event.clientY,
+                          assetId: asset.id,
+                        });
+                      }}
+                    >
                       <span className={`asset-${asset.kind}`}>{assetGlyph(asset.kind)}</span>
                       <small>{asset.name}</small>
                     </button>
@@ -4012,6 +4933,37 @@ export default function Home() {
                   <span>复制节点</span>
                   <kbd>Ctrl+D</kbd>
                 </button>
+                <button type="button" onClick={copySelectedNodes}>
+                  <span>复制</span>
+                  <kbd>Ctrl+C</kbd>
+                </button>
+                <button type="button" onClick={pasteGraphClipboard}>
+                  <span>粘贴</span>
+                  <kbd>Ctrl+V</kbd>
+                </button>
+                <button type="button" onClick={renameSelectedNode}>
+                  <span>重命名</span>
+                  <kbd>F2</kbd>
+                </button>
+                <button
+                  type="button"
+                  disabled={!hasMapLocation(
+                    nodes.find((item) => item.id === graphContextMenu.nodeId)?.geo,
+                  )}
+                  onClick={() => {
+                    setSection("map");
+                    setGraphContextMenu(null);
+                  }}
+                >
+                  <span>在地图中查看</span>
+                </button>
+                <button
+                  type="button"
+                  disabled={!nodes.find((item) => item.id === graphContextMenu.nodeId)?.assetIds?.length}
+                  onClick={() => revealNodeLocalFile(graphContextMenu.nodeId!)}
+                >
+                  <span>浏览到本地文件</span>
+                </button>
                 <button type="button" onClick={disconnectSelectedNodes}>
                   <span>断开全部关系</span>
                 </button>
@@ -4023,6 +4975,16 @@ export default function Home() {
               </>
             ) : (
               <>
+                <button
+                  type="button"
+                  onClick={() => {
+                    pasteGraphClipboard();
+                    setGraphContextMenu(null);
+                  }}
+                >
+                  <span>粘贴节点</span>
+                  <kbd>Ctrl+V</kbd>
+                </button>
                 <button type="button" onClick={() => {
                   flowInstance.current?.fitView({ padding: 0.22, duration: 240 });
                   setGraphContextMenu(null);

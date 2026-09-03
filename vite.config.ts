@@ -55,6 +55,9 @@ export default defineConfig(async () => {
         ? { watch: { useFsEvents: false, usePolling: true } }
         : {}),
     },
+    optimizeDeps: {
+      exclude: ["maplibre-gl"],
+    },
     plugins: [
       vinext(),
       sites(),

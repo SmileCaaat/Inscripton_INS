@@ -14,10 +14,21 @@ import type {
 } from "pdfjs-dist";
 import type { Book, Rendition } from "epubjs";
 import type WaveSurfer from "wavesurfer.js";
+import { TextDocumentEditor } from "./text-document-editor";
+import {
+  isEditableTextFile,
+  type TextSaveReason,
+} from "./text-documents";
 
 type PreviewProps = {
   url: string;
   fileName: string;
+  assetId?: string;
+  onSaveText?: (
+    assetId: string,
+    text: string,
+    reason: TextSaveReason,
+  ) => Promise<void> | void;
 };
 
 function extensionOf(fileName: string) {
@@ -520,38 +531,12 @@ function AudioPreview({ url, fileName }: PreviewProps) {
   );
 }
 
-function TextPreview({ url, fileName }: PreviewProps) {
-  const [text, setText] = useState("");
-  const [error, setError] = useState("");
-  useEffect(() => {
-    let cancelled = false;
-    setText("");
-    setError("");
-    void fetch(url)
-      .then((response) => response.text())
-      .then((value) => {
-        if (!cancelled) setText(value);
-      })
-      .catch((reason: unknown) => {
-        if (!cancelled) {
-          setError(reason instanceof Error ? reason.message : "文本读取失败");
-        }
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [url]);
-  if (error) return <ErrorState message={error} />;
-  if (!text) return <LoadingState label="正在读取文本…" />;
-  return (
-    <div className="text-document-preview">
-      <header>{fileName}</header>
-      <pre>{text}</pre>
-    </div>
-  );
-}
-
-export function DocumentMediaPreview({ url, fileName }: PreviewProps) {
+export function DocumentMediaPreview({
+  url,
+  fileName,
+  assetId,
+  onSaveText,
+}: PreviewProps) {
   const extension = useMemo(() => extensionOf(fileName), [fileName]);
   if (extension === "pdf") return <PdfPreview url={url} fileName={fileName} />;
   if (extension === "docx") {
@@ -572,8 +557,18 @@ export function DocumentMediaPreview({ url, fileName }: PreviewProps) {
   ) {
     return <AudioPreview url={url} fileName={fileName} />;
   }
-  if (["txt", "md", "json", "xml", "html", "css", "js", "ts"].includes(extension)) {
-    return <TextPreview url={url} fileName={fileName} />;
+  if (isEditableTextFile(fileName)) {
+    if (!assetId) {
+      return <ErrorState message="缺少可编辑文本资源标识" />;
+    }
+    return (
+      <TextDocumentEditor
+        assetId={assetId}
+        url={url}
+        fileName={fileName}
+        onSaveText={onSaveText}
+      />
+    );
   }
   return (
     <ErrorState

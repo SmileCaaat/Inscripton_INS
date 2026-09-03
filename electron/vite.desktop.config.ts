@@ -22,6 +22,9 @@ export default defineConfig({
       "@": fileURLToPath(new URL("..", import.meta.url)),
     },
   },
+  optimizeDeps: {
+    exclude: ["maplibre-gl"],
+  },
   build: {
     outDir: desktopOutput,
     emptyOutDir: true,
