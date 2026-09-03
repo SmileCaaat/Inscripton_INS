@@ -93,10 +93,11 @@ test("core workspace interactions are wired", async () => {
 });
 
 test("map view places knowledge nodes on MapLibre with deck.gl", async () => {
-  const [page, map, geo, styles, packageJson, viteConfig] = await Promise.all([
+  const [page, map, geo, io, styles, packageJson, viteConfig] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/studio-map.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/geo.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/map-io.ts", import.meta.url), "utf8"),
     readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
     readFile(new URL("../package.json", import.meta.url), "utf8"),
     readFile(new URL("../vite.config.ts", import.meta.url), "utf8"),
@@ -115,18 +116,30 @@ test("map view places knowledge nodes on MapLibre with deck.gl", async () => {
   assert.match(page, /yearFrom/);
   assert.match(page, /updateSelectedNodeGeo/);
   assert.match(page, /在地图中查看/);
+  assert.match(page, /createMapPlaces/);
+  assert.match(page, /onCreatePlaces/);
   assert.doesNotMatch(page, /from "\.\/studio-map"/);
   assert.match(geo, /export type StudioMapGeo/);
   assert.match(geo, /polygon\?:/);
   assert.match(geo, /export function hasMapPolygon/);
   assert.match(geo, /export function yearsOverlap/);
+  assert.match(geo, /export function geoFromRing/);
   assert.match(map, /react-map-gl\/maplibre/);
   assert.match(map, /ins-map-heat/);
   assert.match(map, /TripsLayer/);
   assert.match(map, /PolygonLayer/);
   assert.match(map, /时间轴/);
   assert.match(map, /四种印记/);
+  assert.match(map, /画点/);
+  assert.match(map, /底图标签/);
+  assert.match(map, /导出 GeoJSON/);
   assert.match(map, /fitBounds/);
+  assert.match(io, /export function parseCsvPlaces/);
+  assert.match(io, /export function parseGeoJsonPlaces/);
+  assert.match(io, /FeatureCollection/);
+  assert.match(styles, /\.studio-map-timeline/);
+  assert.match(styles, /\.studio-map-inscriptions/);
+  assert.match(styles, /\.studio-map-tools/);
   assert.match(viteConfig, /exclude: \["maplibre-gl"\]/);
   assert.match(styles, /\.studio-map-timeline/);
   assert.match(styles, /\.studio-map-inscriptions/);

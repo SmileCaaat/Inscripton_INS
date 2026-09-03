@@ -69,6 +69,7 @@ import {
 } from "./text-documents";
 import { isTypingTarget, nativeFilePath, replacePathFileName } from "./studio-hotkeys";
 import { hasMapLocation, hasMapPolygon, parseCoordinate, parseYear, type StudioMapGeo } from "./geo";
+import type { MapPlaceDraft } from "./map-io";
 import {
   GUIA_ZONE_RING,
   HISTORIC_CENTRE_RING,
@@ -1134,7 +1135,7 @@ const StudioMapCanvas = dynamic(
         <div className="graph-intro">
           <div>
             <span>INS MAP</span>
-            <h1>四种印记</h1>
+            <h1>地图</h1>
           </div>
         </div>
         <div className="studio-map-canvas">
@@ -1444,7 +1445,7 @@ export default function Home() {
   );
   const mapNodes = useMemo(
     () =>
-      visibleNodes.map((node) => ({
+      nodes.map((node) => ({
         id: node.id,
         kind: node.kind,
         title: node.title,
@@ -1455,7 +1456,7 @@ export default function Home() {
         yearFrom: node.yearFrom,
         yearTo: node.yearTo,
       })),
-    [visibleNodes],
+    [nodes],
   );
   const mapRelations = useMemo(
     () =>
@@ -2738,6 +2739,45 @@ export default function Home() {
     flash("已创建 Concept Node");
   };
 
+  const createMapPlaces = (places: MapPlaceDraft[]) => {
+    if (places.length === 0) return;
+    commitGraphHistory();
+    const created: KnowledgeNode[] = places.map((place, index) => {
+      const polygon = hasMapPolygon(place.geo);
+      return {
+        id: `node-${crypto.randomUUID()}`,
+        kind: "Space",
+        title: place.title.trim() || (polygon ? "未命名范围" : "未命名地点"),
+        subtitle: polygon ? "地图范围" : "地图点",
+        period:
+          place.yearFrom != null || place.yearTo != null
+            ? `${place.yearFrom ?? "?"}–${place.yearTo ?? "?"}`
+            : "待考",
+        summary:
+          place.summary ??
+          (polygon ? "在地图上绘制或导入的范围。" : "在地图上标注或导入的地点。"),
+        tags: ["地图"],
+        assetCount: 0,
+        assetIds: [],
+        geo: place.geo,
+        yearFrom: place.yearFrom,
+        yearTo: place.yearTo,
+        x: 360 + ((nodes.length + index) % 4) * 90,
+        y: 140 + Math.floor((nodes.length + index) / 4) * 80,
+      };
+    });
+    setNodes((current) => [...current, ...created]);
+    const last = created[created.length - 1];
+    setSelectedNodeId(last.id);
+    setSelectedNodeIds([last.id]);
+    setInspectorOpen(true);
+    flash(
+      created.length === 1
+        ? `已在地图创建「${created[0].title}」`
+        : `已在地图创建 ${created.length} 个空间节点`,
+    );
+  };
+
   const updateSelectedNode = (patch: Partial<KnowledgeNode>) => {
     setNodes((current) =>
       current.map((node) => (node.id === selectedNodeId ? { ...node, ...patch } : node)),
@@ -3965,6 +4005,8 @@ export default function Home() {
                 relations={mapRelations}
                 selectedNodeId={selectedNodeId}
                 onSelectNode={selectMapNode}
+                onCreatePlaces={createMapPlaces}
+                onNotice={flash}
               />
             )}
 

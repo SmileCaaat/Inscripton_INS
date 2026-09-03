@@ -2219,6 +2219,10 @@ kbd {
   font-size: 10px;
 }
 
+.studio-map-canvas .maplibregl-canvas-container canvas + canvas {
+  pointer-events: none;
+}
+
 .studio-map-places {
   width: 228px;
   position: absolute;
@@ -2229,7 +2233,7 @@ kbd {
   display: flex;
   flex-direction: column;
   padding: 12px;
-  overflow: hidden;
+  overflow: auto;
   border: 1px solid var(--line);
   background: rgba(251, 250, 246, 0.94);
 }
@@ -2251,6 +2255,94 @@ kbd {
 .studio-map-places > strong {
   margin-bottom: 7px;
   font-size: 10px;
+}
+
+.studio-map-canvas.drawing .maplibregl-canvas-container {
+  cursor: crosshair;
+}
+
+.studio-map-tools,
+.studio-map-layers {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0 0 10px;
+}
+
+.studio-map-tools button,
+.studio-map-layers button,
+.studio-map-bounds button,
+.studio-map-file-row button {
+  padding: 5px 8px;
+  border: 1px solid var(--line);
+  background: transparent;
+  cursor: pointer;
+  color: var(--muted);
+  font-size: 8px;
+}
+
+.studio-map-tools button.active,
+.studio-map-layers button.active,
+.studio-map-tools button:hover,
+.studio-map-layers button:hover,
+.studio-map-bounds button:hover,
+.studio-map-file-row button:hover {
+  border-color: var(--ink);
+  color: var(--ink);
+  background: #fff;
+}
+
+.studio-map-bounds {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0 0 10px;
+}
+
+.studio-map-bounds > span {
+  color: var(--rust);
+  font-size: 8px;
+  font-weight: 800;
+  letter-spacing: 0.16em;
+}
+
+.studio-map-bounds-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+
+.studio-map-bounds-grid label {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  color: var(--muted);
+  font-size: 8px;
+}
+
+.studio-map-bounds-grid input {
+  min-width: 0;
+  flex: 1;
+  padding: 3px 5px;
+  border: 1px solid var(--line);
+  background: #fff;
+  color: var(--ink);
+  font-size: 10px;
+}
+
+.studio-map-file-row {
+  margin: 0 0 12px;
+}
+
+.studio-map-file {
+  display: none;
+}
+
+.studio-map-place-empty {
+  margin: 0;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.5;
 }
 
 .studio-map-inscriptions {
