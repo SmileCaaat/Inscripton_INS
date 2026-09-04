@@ -3,7 +3,9 @@
 import dynamic from "next/dynamic";
 import { useMemo, useRef, useState, type FormEvent } from "react";
 import { parseBiblioFile } from "./biblio-import";
-import { networkFromCorpus } from "./biblio-network";
+import { networkFromCorpus, VOS_NETWORK_KINDS, type VosNetworkKind } from "./biblio-network";
+import { BiblioThemePanel } from "./biblio-theme-panel";
+import { thematicEvolution } from "./biblio-themes";
 import {
   loadOpenAlexKey,
   loadOpenAlexMailto,
@@ -44,7 +46,7 @@ const LocalVosViewer = dynamic(
   },
 );
 
-type BiblioTab = "records" | "stats" | "network";
+type BiblioTab = "records" | "stats" | "network" | "themes";
 
 export function BibliometricsTrial({
   corpus,
@@ -77,11 +79,22 @@ export function BibliometricsTrial({
   const [error, setError] = useState("");
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [openId, setOpenId] = useState<string | null>(null);
+  const [networkKind, setNetworkKind] = useState<VosNetworkKind>("keywords");
+  const [themePeriod, setThemePeriod] = useState(0);
 
   const records = corpus.records;
   const selectedRecords = records.filter((record) => selectedIds.includes(record.id));
   const writeRecords = selectedRecords.length > 0 ? selectedRecords : records;
-  const network = useMemo(() => networkFromCorpus(records), [records]);
+  const evolution = useMemo(() => thematicEvolution(records), [records]);
+  const periodIndex = Math.min(themePeriod, Math.max(evolution.periods.length - 1, 0));
+  const network = useMemo(() => {
+    if (networkKind === "theme") {
+      const slice = evolution.networks[periodIndex];
+      if (slice) return { data: slice, fromCorpus: true, kind: "theme" as const };
+      return networkFromCorpus(evolution.periods[periodIndex]?.records ?? records, "theme");
+    }
+    return networkFromCorpus(records, networkKind);
+  }, [records, networkKind, periodIndex, evolution]);
 
   const runSearch = async (event?: FormEvent) => {
     event?.preventDefault();
@@ -178,6 +191,7 @@ export function BibliometricsTrial({
               ["records", "题录"],
               ["stats", "统计"],
               ["network", "网络图"],
+              ["themes", "主题演化"],
             ] as const
           ).map(([id, label]) => (
             <button
@@ -323,7 +337,7 @@ export function BibliometricsTrial({
       {error ? <p className="studio-biblio-error">{error}</p> : null}
       {records.length > 0 ? (
         <p className="studio-biblio-write-hint">
-          文献进图谱是索引，不是再堆一套知识卡片。写入或「一键排列」后：人名在左、文献按年在右；点选才展开著作线。勾选则只写入所选。
+          文献进图谱是索引，不是再堆一套知识卡片。写入或「一键排列」后：人名在左、文献按年在右；点选才展开著作线。勾选则只写入所选。耦合 / 共被引 / 引文网需要参考文献；OpenAlex 检索一般自带，CSV 用「参考文献」列，RIS 用 CR。
         </p>
       ) : null}
 
@@ -385,6 +399,9 @@ export function BibliometricsTrial({
                         {biblioTypeLabel(record.type) || "文献"}
                         {record.doi ? ` · ${record.doi}` : ""}
                         {record.keywords.length > 0 ? ` · ${record.keywords.join(" / ")}` : ""}
+                        {record.referencedWorks.length > 0
+                          ? ` · 参考文献 ${record.referencedWorks.length}`
+                          : ""}
                       </p>
                       <p>{record.abstract || "这条题录没有摘要。"}</p>
                     </div>
@@ -414,14 +431,61 @@ export function BibliometricsTrial({
 
       {tab === "network" && (
         <div className="studio-biblio-canvas">
-          {!network.fromCorpus && (
-            <p className="studio-biblio-network-note">
-              当前题录还不够画共现或合作网，先显示澳门示例网络。检索或导入之后会改用工作区数据。
+          <div className="studio-biblio-net-toolbar">
+            <div className="studio-biblio-vos-switch" role="group" aria-label="网络类型">
+              {VOS_NETWORK_KINDS.map((kind) => (
+                <button
+                  type="button"
+                  key={kind.id}
+                  className={networkKind === kind.id ? "is-active" : ""}
+                  onClick={() => setNetworkKind(kind.id)}
+                >
+                  {kind.label}
+                </button>
+              ))}
+            </div>
+            {networkKind === "theme" && evolution.periods.length > 0 ? (
+              <div className="studio-biblio-vos-switch" role="group" aria-label="主题切片时段">
+                {evolution.periods.map((period, index) => (
+                  <button
+                    type="button"
+                    key={period.label}
+                    className={periodIndex === index ? "is-active" : ""}
+                    onClick={() => setThemePeriod(index)}
+                  >
+                    {period.label}
+                  </button>
+                ))}
+              </div>
+            ) : null}
+          </div>
+          {network.missing ? (
+            <p className="studio-biblio-network-note is-inline">{network.missing}</p>
+          ) : !network.fromCorpus ? (
+            <p className="studio-biblio-network-note is-inline">
+              当前题录还不够画这种网，先显示澳门示例网络。检索或导入之后会改用工作区数据。
             </p>
-          )}
-          <LocalVosViewer
-            key={network.data.info.title + String(network.data.network.items.length)}
-            data={network.data}
+          ) : null}
+          <div className="studio-biblio-canvas-stage">
+            <LocalVosViewer
+              key={network.data.info.title + String(network.data.network.items.length) + networkKind}
+              data={network.data}
+            />
+          </div>
+        </div>
+      )}
+
+      {tab === "themes" && (
+        <div className="studio-biblio-body studio-biblio-theme-body">
+          <BiblioThemePanel
+            evolution={evolution}
+            periodIndex={periodIndex}
+            onPeriodChange={setThemePeriod}
+            onOpenSlice={(index) => {
+              setThemePeriod(index);
+              setNetworkKind("theme");
+              setTab("network");
+            }}
           />
         </div>
       )}

@@ -228,6 +228,22 @@ test("bibliometrics preview renders a local VOSviewer network without leaving th
   assert.match(stats, /highlyCited/);
   assert.match(stats, /termFrequency/);
   assert.match(network, /关键词共现/);
+  assert.match(network, /文献耦合/);
+  assert.match(network, /共被引/);
+  assert.match(network, /引文网/);
+  assert.match(network, /couplingNetwork/);
+  assert.match(network, /cocitationNetwork/);
+  assert.match(network, /citationNetwork/);
+  assert.match(network, /VOS_NETWORK_KINDS/);
+  assert.match(trial, /主题演化/);
+  assert.match(trial, /VOS_NETWORK_KINDS/);
+  assert.match(trial, /耦合 \/ 共被引 \/ 引文网/);
+  assert.match(trial, /thematicEvolution/);
+  assert.match(trial, /BiblioThemePanel/);
+  assert.match(imported, /REFERENCES_HEADER/);
+  assert.match(imported, /parsed\.tag === "CR"/);
+  assert.match(imported, /splitReferencedWorks/);
+  assert.match(imported, /fields\.references \|\| fields\.cited \|\| fields\.bibliography/);
   assert.match(local, /from "vosviewer-online"/);
   assert.match(local, /react-vos-compat/);
   assert.match(local, /LOCAL_VOS_NETWORK/);
@@ -259,6 +275,9 @@ test("bibliometrics preview renders a local VOSviewer network without leaving th
   assert.match(styles, /\.studio-biblio-search-actions \.button-primary \{[\s\S]*?background: var\(--ink\)/);
   assert.match(styles, /\.studio-biblio-stat h2/);
   assert.doesNotMatch(styles, /studio-biblio-frame/);
+  assert.match(styles, /\.studio-biblio-net-toolbar/);
+  assert.match(styles, /\.studio-biblio-strategy/);
+  assert.match(styles, /\.studio-biblio-sankey/);
   assert.match(viteConfig, /javaRandomEsmPlugin/);
   assert.match(viteConfig, /vosviewerReact19Plugin/);
   assert.match(desktopConfig, /javaRandomEsmPlugin/);
@@ -270,6 +289,34 @@ test("bibliometrics preview renders a local VOSviewer network without leaving th
   assert.match(plugin, /"@deck.gl\/extensions"/);
   assert.match(plugin, /"@deck.gl\/mesh-layers"/);
   assert.match(packageJson, /"vosviewer-online"/);
+});
+
+test("bibliometric coupling, cocitation, citation, and theme evolution stay on device", async () => {
+  const [network, themes, panel, imported, trial] = await Promise.all([
+    readFile(new URL("../app/biblio-network.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/biblio-themes.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/biblio-theme-panel.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/biblio-import.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/bibliometrics-trial.tsx", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(network, /export function couplingNetwork/);
+  assert.match(network, /export function cocitationNetwork/);
+  assert.match(network, /export function citationNetwork/);
+  assert.match(themes, /export function thematicEvolution/);
+  assert.match(themes, /inclusionIndex/);
+  assert.match(themes, /centrality/);
+  assert.match(themes, /density/);
+  assert.match(themes, /motor/);
+  assert.match(panel, /战略坐标图/);
+  assert.match(panel, /在网络图中打开此切片/);
+  assert.match(panel, /inclusion/);
+  assert.match(imported, /REFERENCES_HEADER/);
+  assert.match(trial, /setNetworkKind/);
+  assert.doesNotMatch(trial, /iframe/);
+  assert.doesNotMatch(trial, /biblioshiny/i);
+  assert.doesNotMatch(themes, /app\.vosviewer\.com\/\?json=/);
+  assert.doesNotMatch(panel, /iframe/);
 });
 
 test("node dragging stays local to the canvas until drop", async () => {

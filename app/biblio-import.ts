@@ -20,6 +20,8 @@ const KEYWORD_HEADER = /^(keyword|keywords|kw|关键词|主题词)$/i;
 const CITED_HEADER = /^(cited|citations|cited_by|被引|被引次数)$/i;
 const ABSTRACT_HEADER = /^(abstract|ab|摘要)$/i;
 const TYPE_HEADER = /^(type|ty|类型)$/i;
+const REFERENCES_HEADER =
+  /^(cr|cited.?references?|referenced.?works?|references|参考文献|引用文献)$/i;
 
 function splitCsvLine(line: string) {
   const cells: string[] = [];
@@ -74,6 +76,14 @@ function splitKeywords(value: string) {
     .slice(0, 12);
 }
 
+function splitReferencedWorks(value: string) {
+  return value
+    .split(/\s*[;|]\s*|\r?\n/)
+    .map((item) => item.trim())
+    .filter((item) => item.length >= 4)
+    .slice(0, 80);
+}
+
 function parseYearValue(value: string) {
   const match = value.match(/(1[5-9]\d{2}|20\d{2}|2100)/);
   if (!match) return undefined;
@@ -93,6 +103,7 @@ function makeRecord(
     citedBy?: number;
     abstract?: string;
     url?: string;
+    referencedWorks?: string[];
   },
 ): BiblioRecord | null {
   const title = fields.title?.trim();
@@ -111,7 +122,7 @@ function makeRecord(
     venue: fields.venue?.trim() || undefined,
     keywords: fields.keywords ?? [],
     citedBy: fields.citedBy ?? 0,
-    referencedWorks: [],
+    referencedWorks: fields.referencedWorks ?? [],
     abstract: fields.abstract?.trim() || undefined,
     url: fields.url,
     source,
@@ -141,6 +152,7 @@ function parseCsv(text: string): ParseBiblioResult {
   const citedAt = headerIndex(headers, CITED_HEADER);
   const abstractAt = headerIndex(headers, ABSTRACT_HEADER);
   const typeAt = headerIndex(headers, TYPE_HEADER);
+  const refsAt = headerIndex(headers, REFERENCES_HEADER);
 
   const records: BiblioRecord[] = [];
   let skipped = 0;
@@ -157,6 +169,7 @@ function parseCsv(text: string): ParseBiblioResult {
       keywords: keywordAt >= 0 ? splitKeywords(cells[keywordAt] ?? "") : [],
       citedBy: Number.isFinite(citedRaw) ? citedRaw : 0,
       abstract: abstractAt >= 0 ? cells[abstractAt] : undefined,
+      referencedWorks: refsAt >= 0 ? splitReferencedWorks(cells[refsAt] ?? "") : [],
     });
     if (record) records.push(record);
     else skipped += 1;
@@ -184,6 +197,7 @@ function parseRis(text: string): ParseBiblioResult {
     let venue = "";
     let abstract = "";
     let url = "";
+    const citedRefs: string[] = [];
     for (const raw of chunk.split(/\r?\n/)) {
       const parsed = risTag(raw.trim());
       if (!parsed) continue;
@@ -198,6 +212,7 @@ function parseRis(text: string): ParseBiblioResult {
       if (parsed.tag === "DO") doi = parsed.value;
       if (parsed.tag === "AB" || parsed.tag === "N2") abstract = parsed.value || abstract;
       if (parsed.tag === "UR") url = parsed.value;
+      if (parsed.tag === "CR") citedRefs.push(parsed.value);
     }
     const record = makeRecord("ris", {
       title,
@@ -209,6 +224,7 @@ function parseRis(text: string): ParseBiblioResult {
       keywords: keywords.slice(0, 12),
       abstract,
       url,
+      referencedWorks: citedRefs.filter((item) => item.length >= 4).slice(0, 80),
     });
     if (record) records.push(record);
     else if (chunk.trim()) skipped += 1;
@@ -285,6 +301,9 @@ function parseBibtex(text: string): ParseBiblioResult {
       keywords: fields.keywords ? splitKeywords(fields.keywords) : [],
       abstract: fields.abstract,
       url: fields.url,
+      referencedWorks: splitReferencedWorks(
+        fields.references || fields.cited || fields.bibliography || "",
+      ),
     });
     if (record) records.push(record);
     else skipped += 1;
