@@ -88,6 +88,11 @@ test("core workspace interactions are wired", async () => {
     /id: "archive", label: "归档", shortcut: "6"/,
   );
   assert.match(page, /id: "ocr", label: "OCR", shortcut: "7"/);
+  assert.match(page, /id: "biblio", label: "计量", shortcut: "8"/);
+  assert.match(page, /hiddenNodeKinds/);
+  assert.match(page, /LayerVisibilityIcon/);
+  assert.match(page, /node-type-visibility/);
+  assert.match(page, /在图谱中隐藏/);
   assert.doesNotMatch(page, /label: "Narrative"/);
   assert.doesNotMatch(page, /label: "专题"/);
 });
@@ -140,13 +145,131 @@ test("map view places knowledge nodes on MapLibre with deck.gl", async () => {
   assert.match(styles, /\.studio-map-timeline/);
   assert.match(styles, /\.studio-map-inscriptions/);
   assert.match(styles, /\.studio-map-tools/);
-  assert.match(viteConfig, /exclude: \["maplibre-gl"\]/);
+  assert.match(viteConfig, /optimizeDeps: vosviewerOptimizeDeps\(\)/);
+  assert.match(viteConfig, /javaRandomEsmPlugin/);
+  assert.match(viteConfig, /vosviewerReact19Plugin/);
   assert.match(styles, /\.studio-map-timeline/);
   assert.match(styles, /\.studio-map-inscriptions/);
   assert.match(packageJson, /"maplibre-gl"/);
   assert.match(packageJson, /"@deck.gl\/aggregation-layers"/);
   assert.match(packageJson, /"@deck.gl\/geo-layers"/);
+  assert.match(packageJson, /"@deck.gl\/extensions"/);
+  assert.match(packageJson, /"@deck.gl\/mesh-layers"/);
   assert.match(packageJson, /"react-map-gl"/);
+});
+
+test("bibliometrics preview renders a local VOSviewer network without leaving the machine", async () => {
+  const [page, trial, local, sample, openalex, imported, stats, network, styles, viteConfig, desktopConfig, plugin, packageJson, vosConfig, i18n] =
+    await Promise.all([
+      readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+      readFile(new URL("../app/bibliometrics-trial.tsx", import.meta.url), "utf8"),
+      readFile(new URL("../app/bibliometrics-vos-local.tsx", import.meta.url), "utf8"),
+      readFile(new URL("../app/vos-sample-network.ts", import.meta.url), "utf8"),
+      readFile(new URL("../app/biblio-openalex.ts", import.meta.url), "utf8"),
+      readFile(new URL("../app/biblio-import.ts", import.meta.url), "utf8"),
+      readFile(new URL("../app/biblio-stats.ts", import.meta.url), "utf8"),
+      readFile(new URL("../app/biblio-network.ts", import.meta.url), "utf8"),
+      readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+      readFile(new URL("../vite.config.ts", import.meta.url), "utf8"),
+      readFile(new URL("../electron/vite.desktop.config.ts", import.meta.url), "utf8"),
+      readFile(new URL("../build/java-random-esm-plugin.ts", import.meta.url), "utf8"),
+      readFile(new URL("../package.json", import.meta.url), "utf8"),
+      readFile(new URL("../app/vos-online-config.ts", import.meta.url), "utf8"),
+      readFile(new URL("../app/vos-ui-i18n.ts", import.meta.url), "utf8"),
+    ]);
+
+  assert.match(page, /id: "biblio", label: "计量", shortcut: "8"/);
+  assert.match(page, /StudioBiblioCanvas/);
+  assert.match(page, /section === "biblio"/);
+  assert.match(page, /biblioCorpus/);
+  assert.match(page, /writeBiblioRecords/);
+  assert.match(page, /kind: "Document"/);
+  assert.match(page, /kind: "Person"/);
+  assert.match(page, /kind: "Author"/);
+  assert.match(page, /文献作者/);
+  assert.match(page, /一键排列/);
+  assert.match(page, /biblio-author-chip/);
+  assert.match(page, /biblio-paper-row/);
+  assert.match(page, /matchingKnowledgeIds/);
+  assert.match(page, /biblio-edge/);
+  assert.doesNotMatch(page, /graphShowBiblio/);
+  assert.doesNotMatch(page, /layoutBiblioCluster/);
+  assert.doesNotMatch(page, /slice\(0, 420\)/);
+  assert.match(trial, /LocalVosViewer/);
+  assert.match(trial, /本机检索/);
+  assert.match(trial, /检索词/);
+  assert.match(trial, /OpenAlex Key/);
+  assert.match(trial, /导入 CSV \/ RIS \/ BibTeX/);
+  assert.match(trial, /写入知识库/);
+  assert.match(trial, /一键排列/);
+  assert.doesNotMatch(trial, /先勾选/);
+  assert.doesNotMatch(trial, /BIBLIO_GRAPH_WRITE_LIMIT/);
+  assert.match(trial, /年度发文/);
+  assert.match(trial, /高产作者/);
+  assert.match(trial, /核心期刊/);
+  assert.match(trial, /高被引/);
+  assert.match(trial, /词频/);
+  assert.doesNotMatch(trial, /iframe/);
+  assert.doesNotMatch(trial, /HOSTED_VOS_DEMO/);
+  assert.doesNotMatch(trial, /app\.vosviewer\.com\/\?json=/);
+  assert.doesNotMatch(trial, /biblioshiny/i);
+  assert.match(openalex, /https:\/\/api\.openalex\.org\/works/);
+  assert.match(openalex, /inscription-openalex-key-v1/);
+  assert.match(openalex, /maxPages/);
+  assert.match(openalex, /BIBLIO_CORPUS_LIMIT/);
+  assert.doesNotMatch(trial, /检索走 OpenAlex/);
+  assert.match(trial, /<h2>\{title\}<\/h2>/);
+  assert.match(imported, /parseRis/);
+  assert.match(imported, /parseBibtex/);
+  assert.match(imported, /parseCsv/);
+  assert.match(stats, /yearlyCounts/);
+  assert.match(stats, /topAuthors/);
+  assert.match(stats, /coreVenues/);
+  assert.match(stats, /highlyCited/);
+  assert.match(stats, /termFrequency/);
+  assert.match(network, /关键词共现/);
+  assert.match(local, /from "vosviewer-online"/);
+  assert.match(local, /react-vos-compat/);
+  assert.match(local, /LOCAL_VOS_NETWORK/);
+  assert.match(local, /VOS_FULL_PARAMETERS/);
+  assert.match(local, /中文/);
+  assert.match(local, /English/);
+  assert.match(local, /聚类着色/);
+  assert.match(local, /年份着色/);
+  assert.match(local, /完整界面/);
+  assert.match(local, /openVosControlPanel/);
+  assert.doesNotMatch(local, /simple_ui:\s*true/);
+  assert.match(vosConfig, /simple_ui: false/);
+  assert.match(vosConfig, /VOS_TERMINOLOGY/);
+  assert.doesNotMatch(network, /simple_ui:\s*true/);
+  assert.match(network, /VOS_FULL_PARAMETERS/);
+  assert.match(sample, /VOS_FULL_PARAMETERS/);
+  assert.doesNotMatch(sample, /simple_ui:\s*true/);
+  assert.match(i18n, /Show control panel/);
+  assert.match(i18n, /显示控制面板/);
+  assert.match(i18n, /Update layout/);
+  assert.match(i18n, /更新布局/);
+  assert.match(styles, /\.studio-biblio-vos-bar/);
+  assert.match(styles, /\.studio-biblio-vos-switch/);
+  assert.match(sample, /LOCAL_VOS_NETWORK/);
+  assert.match(sample, /圣保禄学院/);
+  assert.doesNotMatch(sample, /HOSTED_VOS_DEMO/);
+  assert.match(styles, /\.studio-biblio-vos/);
+  assert.match(styles, /\.studio-biblio-search/);
+  assert.match(styles, /\.studio-biblio-search-actions \.button-primary \{[\s\S]*?background: var\(--ink\)/);
+  assert.match(styles, /\.studio-biblio-stat h2/);
+  assert.doesNotMatch(styles, /studio-biblio-frame/);
+  assert.match(viteConfig, /javaRandomEsmPlugin/);
+  assert.match(viteConfig, /vosviewerReact19Plugin/);
+  assert.match(desktopConfig, /javaRandomEsmPlugin/);
+  assert.match(desktopConfig, /vosviewerReact19Plugin/);
+  assert.match(plugin, /export default class JavaRandom/);
+  assert.match(plugin, /SECRET_INTERNALS_DO_NOT_USE_OR_YOU_WILL_BE_FIRED/);
+  assert.match(plugin, /__insJsx/);
+  assert.match(plugin, /export function vosviewerOptimizeDeps/);
+  assert.match(plugin, /"@deck.gl\/extensions"/);
+  assert.match(plugin, /"@deck.gl\/mesh-layers"/);
+  assert.match(packageJson, /"vosviewer-online"/);
 });
 
 test("node dragging stays local to the canvas until drop", async () => {

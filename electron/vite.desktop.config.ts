@@ -1,6 +1,11 @@
 import react from "@vitejs/plugin-react";
 import { defineConfig } from "vite";
 import { fileURLToPath, URL } from "node:url";
+import {
+  javaRandomEsmPlugin,
+  vosviewerOptimizeDeps,
+  vosviewerReact19Plugin,
+} from "../build/java-random-esm-plugin";
 
 const rendererRoot = fileURLToPath(
   new URL("./renderer", import.meta.url),
@@ -16,15 +21,13 @@ export default defineConfig({
   root: rendererRoot,
   publicDir: publicDirectory,
   base: "./",
-  plugins: [react()],
+  plugins: [javaRandomEsmPlugin(), vosviewerReact19Plugin(), react()],
   resolve: {
     alias: {
       "@": fileURLToPath(new URL("..", import.meta.url)),
     },
   },
-  optimizeDeps: {
-    exclude: ["maplibre-gl"],
-  },
+  optimizeDeps: vosviewerOptimizeDeps(),
   build: {
     outDir: desktopOutput,
     emptyOutDir: true,

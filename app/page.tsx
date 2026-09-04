@@ -77,11 +77,31 @@ import {
   SAMPLE_NODE_YEARS,
   SENADO_SQUARE_RING,
 } from "./sample-map-inscriptions";
+import {
+  applyBiblioArrange,
+  BIBLIO_AUTHOR_HEIGHT,
+  BIBLIO_AUTHOR_WIDTH,
+  BIBLIO_DOC_HEIGHT,
+  BIBLIO_DOC_WIDTH,
+  BIBLIO_GRAPH_TAG,
+  biblioNodeSummary,
+  biblioTypeLabel,
+  emptyBiblioCorpus,
+  isBiblioAuthorNode,
+  isBiblioDocumentNode,
+  isBiblioGraphNode,
+  matchingKnowledgeIds,
+  migrateBiblioAuthorNode,
+  normalizeDoi,
+  type BiblioCorpus,
+  type BiblioRecord,
+} from "./biblio-types";
 
 type Section =
   | "nodes"
   | "graph"
   | "map"
+  | "biblio"
   | "assets"
   | "boards"
   | "archive"
@@ -94,6 +114,7 @@ type NodeKind =
   | "Person"
   | "Event"
   | "Document"
+  | "Author"
   | "Artifact"
   | "Media"
   | "Concept";
@@ -174,6 +195,7 @@ type WorkspaceRecord = {
   topics: TopicRecord[];
   graphAnnotations: GraphAnnotation[];
   deliveryPackages: DeliveryPackage[];
+  biblioCorpus: BiblioCorpus;
 };
 
 type WorkspaceVersion = {
@@ -188,6 +210,7 @@ type KnowledgeFlowNode = FlowNode<
   {
     node: KnowledgeNode;
     assets: AssetItem[];
+    degree?: number;
     onAssetDrop: (nodeId: string, assetId: string) => void;
   },
   "knowledge"
@@ -204,6 +227,8 @@ type EditableRelationEdgeData = Record<string, unknown> & {
   label: string;
   draft: string;
   editing: boolean;
+  quiet?: boolean;
+  emphasis?: boolean;
   onBeginEdit: (relationId: string) => void;
   onDraftChange: (value: string) => void;
   onCommit: (relationId: string, value: string) => void;
@@ -269,10 +294,52 @@ const kindMeta: Record<NodeKind, { label: string; mark: string; color: string }>
   Person: { label: "人物", mark: "P", color: "#7f3f2e" },
   Event: { label: "事件", mark: "E", color: "#9a641e" },
   Document: { label: "文献", mark: "D", color: "#445a78" },
+  Author: { label: "文献作者", mark: "作", color: "#6b5344" },
   Artifact: { label: "物件", mark: "A", color: "#6c4d72" },
   Media: { label: "媒介", mark: "M", color: "#42666b" },
   Concept: { label: "概念", mark: "C", color: "#68624a" },
 };
+
+function LayerVisibilityIcon({ hidden }: { hidden: boolean }) {
+  if (hidden) {
+    return (
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <path
+          d="M3.4 3.4 20.6 20.6"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.8"
+          strokeLinecap="round"
+        />
+        <path
+          d="M9.8 9.9A3 3 0 0 0 12 15c.5 0 1-.1 1.4-.4M17.5 13.8C19.2 12.7 20.5 12 20.5 12s-3.6-7-9.5-7c-1.2 0-2.3.3-3.3.7M6.4 6.8C4.4 8.3 2.5 12 2.5 12s1.5 3 4.2 5.1"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.8"
+          strokeLinecap="round"
+        />
+      </svg>
+    );
+  }
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path
+        d="M2.5 12s3.6-7 9.5-7 9.5 7 9.5 7-3.6 7-9.5 7-9.5-7-9.5-7Z"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.8"
+      />
+      <circle
+        cx="12"
+        cy="12"
+        r="2.8"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.8"
+      />
+    </svg>
+  );
+}
 
 const sectionMeta: Array<{
   id: Section;
@@ -285,6 +352,7 @@ const sectionMeta: Array<{
   { id: "nodes", label: "节点", shortcut: "3" },
   { id: "graph", label: "图谱", shortcut: "4" },
   { id: "map", label: "地图", shortcut: "5" },
+  { id: "biblio", label: "计量", shortcut: "8" },
   { id: "archive", label: "归档", shortcut: "6" },
   { id: "ocr", label: "OCR", shortcut: "7" },
 ];
@@ -799,6 +867,7 @@ function createInitialWorkspace(): WorkspaceRecord {
     topics: initialTopics.map((topic) => ({ ...topic })),
     graphAnnotations: [],
     deliveryPackages: [],
+    biblioCorpus: emptyBiblioCorpus(),
   };
 }
 
@@ -888,14 +957,23 @@ const KnowledgeGraphNode = memo(function KnowledgeGraphNode({
   selected,
 }: NodeProps<KnowledgeFlowNode>) {
   const node = data.node;
+  const meta = kindMeta[node.kind] ?? kindMeta.Concept;
+  const author = isBiblioAuthorNode(node);
+  const paper = isBiblioDocumentNode(node);
   return (
     <div
-      className={`knowledge-card ${selected ? "selected" : ""}`}
+      className={
+        author
+          ? `biblio-author-chip${selected ? " selected" : ""}`
+          : paper
+            ? `biblio-paper-row${selected ? " selected" : ""}`
+            : `knowledge-card${selected ? " selected" : ""}`
+      }
       data-node-id={node.id}
       role="button"
       tabIndex={0}
-      aria-label={`${kindMeta[node.kind].label}节点：${node.title}`}
-      style={{ "--node-color": kindMeta[node.kind].color } as CSSProperties}
+      aria-label={`${meta.label}节点：${node.title}`}
+      style={{ "--node-color": meta.color } as CSSProperties}
       onDragOver={(event) => {
         if (event.dataTransfer.types.includes("application/x-ins-asset")) {
           event.preventDefault();
@@ -915,27 +993,41 @@ const KnowledgeGraphNode = memo(function KnowledgeGraphNode({
         className="knowledge-handle knowledge-handle-target"
         aria-label={`连接到${node.title}`}
       />
-      <div className="knowledge-card-topline">
-        <span>{kindMeta[node.kind].label.toUpperCase()} NODE</span>
-        <i>{data.assets.length}</i>
-      </div>
-      <strong>{node.title}</strong>
-      <small>{node.period}</small>
-      <div className="knowledge-card-tags">
-        {node.tags.slice(0, 2).map((tag) => (
-          <span key={tag}>{tag}</span>
-        ))}
-      </div>
-      <div className="node-contained-assets">
-        {data.assets.slice(0, 3).map((asset) => (
-          <span key={asset.id} className={`node-asset-chip asset-${asset.kind}`}>
-            <i>{assetGlyph(asset.kind)}</i>
-            <b>{asset.name}</b>
-          </span>
-        ))}
-        {data.assets.length === 0 && <span className="node-drop-hint">拖入资产</span>}
-        {data.assets.length > 3 && <small>＋{data.assets.length - 3}</small>}
-      </div>
+      {author ? (
+        <>
+          <b>{node.title}</b>
+          {data.degree ? <small>{data.degree}</small> : null}
+        </>
+      ) : paper ? (
+        <>
+          <span className="biblio-paper-year">{node.period || "—"}</span>
+          <strong title={node.title}>{node.title}</strong>
+        </>
+      ) : (
+        <>
+          <div className="knowledge-card-topline">
+            <span>{meta.label.toUpperCase()} NODE</span>
+            <i>{data.assets.length}</i>
+          </div>
+          <strong>{node.title}</strong>
+          <small>{node.period}</small>
+          <div className="knowledge-card-tags">
+            {node.tags.slice(0, 2).map((tag) => (
+              <span key={tag}>{tag}</span>
+            ))}
+          </div>
+          <div className="node-contained-assets">
+            {data.assets.slice(0, 3).map((asset) => (
+              <span key={asset.id} className={`node-asset-chip asset-${asset.kind}`}>
+                <i>{assetGlyph(asset.kind)}</i>
+                <b>{asset.name}</b>
+              </span>
+            ))}
+            {data.assets.length === 0 && <span className="node-drop-hint">拖入资产</span>}
+            {data.assets.length > 3 && <small>＋{data.assets.length - 3}</small>}
+          </div>
+        </>
+      )}
       <Handle
         type="source"
         position={Position.Right}
@@ -997,8 +1089,9 @@ const EditableRelationEdge = memo(function EditableRelationEdge({
         markerStart={markerStart}
         markerEnd={markerEnd}
         style={style}
-        interactionWidth={28}
+        interactionWidth={data.quiet && !data.emphasis ? 12 : 28}
       />
+      {data.quiet && !data.editing && !data.emphasis ? null : (
       <EdgeLabelRenderer>
         <div
           className={`editable-relation-label nodrag nopan ${
@@ -1058,6 +1151,7 @@ const EditableRelationEdge = memo(function EditableRelationEdge({
           )}
         </div>
       </EdgeLabelRenderer>
+      )}
     </>
   );
 });
@@ -1079,6 +1173,7 @@ function buildFlowNodes(
   onAssetDrop: (nodeId: string, assetId: string) => void,
   current: StudioFlowNode[] = [],
   preserveCanvasPositions = false,
+  degrees: Map<string, number> = new Map(),
 ): StudioFlowNode[] {
   const currentById = new Map(current.map((node) => [node.id, node]));
 
@@ -1101,6 +1196,8 @@ function buildFlowNodes(
 
   const knowledgeNodes: KnowledgeFlowNode[] = nodes.map((node) => {
     const previous = currentById.get(node.id);
+    const author = isBiblioAuthorNode(node);
+    const paper = isBiblioDocumentNode(node);
     return {
       ...(previous?.type === "knowledge" ? previous : {}),
       id: node.id,
@@ -1110,15 +1207,50 @@ function buildFlowNodes(
           ? previous.position
           : { x: node.x, y: node.y },
       selected: selectedNodeIds.includes(node.id),
+      style: author
+        ? { width: BIBLIO_AUTHOR_WIDTH, height: BIBLIO_AUTHOR_HEIGHT }
+        : paper
+          ? { width: BIBLIO_DOC_WIDTH, height: BIBLIO_DOC_HEIGHT }
+          : previous?.style,
       data: {
         node,
         assets: assets.filter((asset) => node.assetIds?.includes(asset.id)),
+        degree: degrees.get(node.id),
         onAssetDrop,
       },
     };
   });
 
   return [...noteNodes, ...knowledgeNodes];
+}
+
+function extraBiblioKnowledgeRelations(
+  allNodes: KnowledgeNode[],
+  relations: Relation[],
+) {
+  const knowledge = allNodes.filter((node) => !isBiblioGraphNode(node));
+  const papers = allNodes.filter((node) => isBiblioDocumentNode(node));
+  const seen = new Set(
+    relations.map(
+      (relation) => `${relation.source}|${relation.target}|${relation.type}`,
+    ),
+  );
+  const extra: Relation[] = [];
+  for (const paper of papers) {
+    for (const targetId of matchingKnowledgeIds(paper, knowledge)) {
+      const key = `${paper.id}|${targetId}|述`;
+      if (seen.has(key)) continue;
+      extra.push({
+        id: `relation-${crypto.randomUUID()}`,
+        source: paper.id,
+        target: targetId,
+        type: "述",
+        evidence: paper.title,
+      });
+      seen.add(key);
+    }
+  }
+  return extra;
 }
 
 const ReactFlowCanvas = dynamic(
@@ -1143,6 +1275,30 @@ const StudioMapCanvas = dynamic(
             <span>LOADING MAP</span>
             <h2>正在载入地图</h2>
             <p>MapLibre 底图与 deck.gl 图层会在客户端加载。</p>
+          </div>
+        </div>
+      </div>
+    ),
+  },
+);
+
+const StudioBiblioCanvas = dynamic(
+  () => import("./bibliometrics-trial").then((module) => module.BibliometricsTrial),
+  {
+    ssr: false,
+    loading: () => (
+      <div className="studio-map-view">
+        <div className="graph-intro">
+          <div>
+            <span>BIBLIOMETRICS</span>
+            <h1>计量</h1>
+          </div>
+        </div>
+        <div className="studio-map-canvas">
+          <div className="studio-map-empty">
+            <span>LOADING BIBLIOMETRICS</span>
+            <h2>正在载入计量工作台</h2>
+            <p>检索窗、题录表和本机网络图会在客户端加载，数据仍留在本机。</p>
           </div>
         </div>
       </div>
@@ -1281,6 +1437,9 @@ export default function Home() {
   const [topicDescription, setTopicDescription] = useState("");
   const [activeTopicId, setActiveTopicId] = useState("");
   const [nodeKindFilter, setNodeKindFilter] = useState<NodeKind | "all">("all");
+  const [hiddenNodeKinds, setHiddenNodeKinds] = useState<Set<NodeKind>>(
+    () => new Set(),
+  );
   const [nodeSort, setNodeSort] = useState<"manual" | "title" | "kind">("manual");
   const [assetFolderFilter, setAssetFolderFilter] = useState("all");
   const [assetKindFilter, setAssetKindFilter] = useState<AssetItem["kind"] | "all">("all");
@@ -1344,6 +1503,7 @@ export default function Home() {
   const topics = activeWorkspace?.topics ?? [];
   const graphAnnotations = activeWorkspace?.graphAnnotations ?? [];
   const deliveryPackages = activeWorkspace?.deliveryPackages ?? [];
+  const biblioCorpus = activeWorkspace?.biblioCorpus ?? emptyBiblioCorpus();
 
   const updateActiveWorkspace = (
     updater: (workspace: WorkspaceRecord) => WorkspaceRecord,
@@ -1386,12 +1546,16 @@ export default function Home() {
   const typeCounts = useMemo(
     () =>
       nodes.reduce(
-        (counts, node) => ({ ...counts, [node.kind]: counts[node.kind] + 1 }),
+        (counts, node) => ({
+          ...counts,
+          [node.kind]: (counts[node.kind] ?? 0) + 1,
+        }),
         {
           Space: 0,
           Person: 0,
           Event: 0,
           Document: 0,
+          Author: 0,
           Artifact: 0,
           Media: 0,
           Concept: 0,
@@ -1400,7 +1564,7 @@ export default function Home() {
     [nodes],
   );
 
-  const visibleNodes = useMemo(() => {
+  const listedNodes = useMemo(() => {
     const keyword = search.trim().toLowerCase();
     const filtered = nodes.filter(
       (node) =>
@@ -1416,11 +1580,30 @@ export default function Home() {
     }
     if (nodeSort === "kind") {
       return [...filtered].sort((a, b) =>
-        kindMeta[a.kind].label.localeCompare(kindMeta[b.kind].label, "zh-CN"),
+        kindMeta[a.kind]?.label.localeCompare(kindMeta[b.kind]?.label ?? "", "zh-CN"),
       );
     }
     return filtered;
   }, [nodeKindFilter, nodeSort, nodes, search]);
+
+  const biblioNodeCount = useMemo(
+    () => nodes.filter((node) => isBiblioGraphNode(node)).length,
+    [nodes],
+  );
+
+  const graphNodes = useMemo(
+    () => listedNodes.filter((node) => !hiddenNodeKinds.has(node.kind)),
+    [hiddenNodeKinds, listedNodes],
+  );
+
+  const biblioDegrees = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const relation of relations) {
+      if (relation.type !== "著") continue;
+      map.set(relation.source, (map.get(relation.source) ?? 0) + 1);
+    }
+    return map;
+  }, [relations]);
 
   const filteredAssets = useMemo(() => {
     const keyword = search.trim().toLowerCase();
@@ -1440,8 +1623,16 @@ export default function Home() {
   }, [assetFolderFilter, assetKindFilter, assets, search]);
 
   const visibleNodeIds = useMemo(
-    () => new Set(visibleNodes.map((node) => node.id)),
-    [visibleNodes],
+    () => new Set(graphNodes.map((node) => node.id)),
+    [graphNodes],
+  );
+  const graphRelationCount = useMemo(
+    () =>
+      relations.filter(
+        (relation) =>
+          visibleNodeIds.has(relation.source) && visibleNodeIds.has(relation.target),
+      ).length,
+    [relations, visibleNodeIds],
   );
   const mapNodes = useMemo(
     () =>
@@ -1627,7 +1818,7 @@ export default function Home() {
 
   const [flowNodes, setFlowNodes] = useState<StudioFlowNode[]>(() =>
     buildFlowNodes(
-      visibleNodes,
+      graphNodes,
       graphAnnotations,
       assets,
       selectedNodeIds,
@@ -1639,18 +1830,19 @@ export default function Home() {
   useEffect(() => {
     setFlowNodes((current) => {
       const next = buildFlowNodes(
-        visibleNodes,
+        graphNodes,
         graphAnnotations,
         assets,
         selectedNodeIds,
         attachAssetToNode,
         current,
         nodeDragActive.current,
+        biblioDegrees,
       );
       flowNodesRef.current = next;
       return next;
     });
-  }, [assets, graphAnnotations, selectedNodeIds, visibleNodes]);
+  }, [assets, biblioDegrees, graphAnnotations, selectedNodeIds, graphNodes]);
 
   const cancelRelationEdit = useCallback(() => {
     setEditingRelationId(null);
@@ -1699,27 +1891,45 @@ export default function Home() {
           (relation) =>
             visibleNodeIds.has(relation.source) && visibleNodeIds.has(relation.target),
         )
-        .map((relation) => ({
-          id: relation.id,
-          source: relation.source,
-          target: relation.target,
-          type: "editableRelation" as const,
-          className: "knowledge-edge",
-          ariaLabel: `关系：${relation.type}，点击可修改`,
-          data: {
-            label: relation.type,
-            draft:
-              editingRelationId === relation.id
-                ? relationDraft
-                : relation.type,
-            editing: editingRelationId === relation.id,
-            onBeginEdit: beginRelationEdit,
-            onDraftChange: setRelationDraft,
-            onCommit: commitRelationLabel,
-            onCancel: cancelRelationEdit,
-          },
-          style: { stroke: "#87847b", strokeWidth: 1.2 },
-        })),
+        .map((relation) => {
+          const biblioEdge = relation.type === "著" || relation.type === "述";
+          const emphasis =
+            biblioEdge &&
+            (selectedNodeIds.includes(relation.source) ||
+              selectedNodeIds.includes(relation.target));
+          return {
+            id: relation.id,
+            source: relation.source,
+            target: relation.target,
+            type: "editableRelation" as const,
+            className: biblioEdge ? "knowledge-edge biblio-edge" : "knowledge-edge",
+            ariaLabel: `关系：${relation.type}，点击可修改`,
+            data: {
+              label: relation.type,
+              draft:
+                editingRelationId === relation.id
+                  ? relationDraft
+                  : relation.type,
+              editing: editingRelationId === relation.id,
+              quiet: biblioEdge,
+              emphasis,
+              onBeginEdit: beginRelationEdit,
+              onDraftChange: setRelationDraft,
+              onCommit: commitRelationLabel,
+              onCancel: cancelRelationEdit,
+            },
+            style: biblioEdge
+              ? {
+                  stroke: emphasis
+                    ? relation.type === "述"
+                      ? "#315c4b"
+                      : "#6b5344"
+                    : "rgba(107, 83, 68, 0.14)",
+                  strokeWidth: emphasis ? 1.6 : 0.7,
+                }
+              : { stroke: "#87847b", strokeWidth: 1.2 },
+          };
+        }),
     [
       beginRelationEdit,
       cancelRelationEdit,
@@ -1727,6 +1937,7 @@ export default function Home() {
       editingRelationId,
       relationDraft,
       relations,
+      selectedNodeIds,
       visibleNodeIds,
     ],
   );
@@ -1752,6 +1963,15 @@ export default function Home() {
       deliveryPackages: activeWorkspace.deliveryPackages.map((item) => ({
         ...item,
       })),
+      biblioCorpus: {
+        ...(activeWorkspace.biblioCorpus ?? emptyBiblioCorpus()),
+        records: (activeWorkspace.biblioCorpus?.records ?? []).map((record) => ({
+          ...record,
+          authors: [...record.authors],
+          keywords: [...record.keywords],
+          referencedWorks: [...record.referencedWorks],
+        })),
+      },
     };
     const version: WorkspaceVersion = {
       id: `version-${crypto.randomUUID()}`,
@@ -1775,6 +1995,7 @@ export default function Home() {
               deliveryPackages: (
                 version.snapshot.deliveryPackages ?? []
               ).map((item) => ({ ...item })),
+              biblioCorpus: version.snapshot.biblioCorpus ?? emptyBiblioCorpus(),
             }
           : workspace,
       ),
@@ -2111,7 +2332,7 @@ export default function Home() {
   useEffect(() => {
     const onAssetKeyDown = (event: KeyboardEvent) => {
       if (explorer || dialog) return;
-      if (section === "graph" || section === "boards" || section === "map") return;
+      if (section === "graph" || section === "boards" || section === "map" || section === "biblio") return;
       if (section === "nodes") return;
       if (isTypingTarget(event.target)) return;
       const ctrl = event.ctrlKey || event.metaKey;
@@ -2198,7 +2419,7 @@ export default function Home() {
                           : (node.geo?.polygon ?? sample?.geo?.polygon),
                     }
                   : node.geo;
-              return {
+              return migrateBiblioAuthorNode({
                 ...node,
                 assetIds: [
                   ...(node.assetIds ?? sampleNodeAssets.get(node.id) ?? []),
@@ -2206,12 +2427,13 @@ export default function Home() {
                 geo,
                 yearFrom: node.yearFrom ?? sample?.yearFrom ?? years?.yearFrom,
                 yearTo: node.yearTo ?? sample?.yearTo ?? years?.yearTo,
-              };
+              });
             });
             return {
               ...workspace,
               graphAnnotations: workspace.graphAnnotations ?? [],
               deliveryPackages: workspace.deliveryPackages ?? [],
+              biblioCorpus: workspace.biblioCorpus ?? emptyBiblioCorpus(),
               nodes:
                 workspace.id === "workspace-ruins"
                   ? [
@@ -2778,6 +3000,184 @@ export default function Home() {
     );
   };
 
+  const setBiblioCorpus = (next: BiblioCorpus) => {
+    updateActiveWorkspace((workspace) => ({
+      ...workspace,
+      biblioCorpus: next,
+    }));
+  };
+
+  const writeBiblioRecords = (records: BiblioRecord[]) => {
+    if (records.length === 0) {
+      flash("没有可写入的题录。");
+      return;
+    }
+    commitGraphHistory();
+    const existingSources = new Set(
+      nodes
+        .filter((node) => node.kind === "Document" && node.source)
+        .map((node) => node.source!.toLowerCase()),
+    );
+    const authorIds = new Map(
+      nodes
+        .filter((node) => isBiblioAuthorNode(node))
+        .map((node) => [node.title.trim().toLowerCase(), node.id]),
+    );
+
+    const recordSource = (record: BiblioRecord) => {
+      if (record.doi) return `https://doi.org/${normalizeDoi(record.doi)}`;
+      return record.url || record.id;
+    };
+
+    const createdNodes: KnowledgeNode[] = [];
+    const createdRelations: Relation[] = [];
+    let documentCount = 0;
+    let authorCount = 0;
+    let skipped = 0;
+    let lastDocumentId = "";
+
+    for (const record of records) {
+      const source = recordSource(record);
+      if (existingSources.has(source.toLowerCase())) {
+        skipped += 1;
+        continue;
+      }
+      const documentId = `node-${crypto.randomUUID()}`;
+      const year = record.year ? String(record.year) : "待考";
+      createdNodes.push({
+        id: documentId,
+        kind: "Document",
+        title: record.title.trim() || "未命名文献",
+        subtitle: record.venue || biblioTypeLabel(record.type) || "计量题录",
+        period: year,
+        summary: biblioNodeSummary(record),
+        tags: [BIBLIO_GRAPH_TAG],
+        source,
+        assetCount: 0,
+        assetIds: [],
+        yearFrom: record.year,
+        yearTo: record.year,
+        x: 0,
+        y: 0,
+      });
+      existingSources.add(source.toLowerCase());
+      documentCount += 1;
+      lastDocumentId = documentId;
+
+      for (const author of record.authors) {
+        const name = author.trim();
+        if (!name) continue;
+        const key = name.toLowerCase();
+        let authorId = authorIds.get(key);
+        if (!authorId) {
+          authorId = `node-${crypto.randomUUID()}`;
+          createdNodes.push({
+            id: authorId,
+            kind: "Author",
+            title: name,
+            subtitle: "文献作者",
+            period: year,
+            summary: "计量题录作者",
+            tags: [BIBLIO_GRAPH_TAG],
+            assetCount: 0,
+            assetIds: [],
+            x: 0,
+            y: 0,
+          });
+          authorIds.set(key, authorId);
+          authorCount += 1;
+        }
+        createdRelations.push({
+          id: `relation-${crypto.randomUUID()}`,
+          source: authorId,
+          target: documentId,
+          type: "著",
+          evidence: record.doi || record.title,
+        });
+      }
+    }
+
+    if (createdNodes.length > 0) {
+      updateActiveWorkspace((workspace) => {
+        const extraOccupied = workspace.graphAnnotations.map((annotation) => ({
+          x: annotation.x,
+          y: annotation.y,
+          width: annotation.width,
+          height: annotation.height,
+        }));
+        const nextRelations = [...workspace.relations, ...createdRelations];
+        const nextNodes = applyBiblioArrange(
+          [...workspace.nodes, ...createdNodes],
+          extraOccupied,
+          nextRelations,
+        );
+        return {
+          ...workspace,
+          nodes: nextNodes,
+          relations: [
+            ...nextRelations,
+            ...extraBiblioKnowledgeRelations(nextNodes, nextRelations),
+          ],
+        };
+      });
+    }
+    if (lastDocumentId) {
+      setSelectedNodeId(lastDocumentId);
+      setSelectedNodeIds([lastDocumentId]);
+      setInspectorOpen(true);
+    }
+    flash(
+      documentCount === 0
+        ? skipped
+          ? "这些题录已经在知识库里，没有重复写入。"
+          : "没有可写入的题录。"
+        : `已写入 ${documentCount} 篇文献` +
+            (authorCount ? `、${authorCount} 位文献作者` : "") +
+            (skipped ? `，跳过 ${skipped} 篇已有文献` : "") +
+            "。图谱里是文献索引：点作者或文献才展开「著」线，能对上研究节点的会连「述」。",
+    );
+    window.requestAnimationFrame(() => {
+      flowInstance.current?.fitView({ padding: 0.18, maxZoom: 1.2 });
+    });
+  };
+
+  const arrangeBiblioGraphNodes = () => {
+    const count = nodes.filter((node) => isBiblioGraphNode(node)).length;
+    if (count === 0) {
+      flash("没有可排列的文献作者或计量文献。");
+      return;
+    }
+    commitGraphHistory();
+    updateActiveWorkspace((workspace) => {
+      const extraOccupied = workspace.graphAnnotations.map((annotation) => ({
+        x: annotation.x,
+        y: annotation.y,
+        width: annotation.width,
+        height: annotation.height,
+      }));
+      const nextNodes = applyBiblioArrange(
+        workspace.nodes,
+        extraOccupied,
+        workspace.relations,
+      );
+      const extraRelations = extraBiblioKnowledgeRelations(
+        nextNodes,
+        workspace.relations,
+      );
+      return {
+        ...workspace,
+        nodes: nextNodes,
+        relations: extraRelations.length
+          ? [...workspace.relations, ...extraRelations]
+          : workspace.relations,
+      };
+    });
+    flash("已排成文献索引：作者人名在左，文献按年在右。点选才展开著作线。");
+    window.requestAnimationFrame(() => {
+      flowInstance.current?.fitView({ padding: 0.18, maxZoom: 1.2 });
+    });
+  };
+
   const updateSelectedNode = (patch: Partial<KnowledgeNode>) => {
     setNodes((current) =>
       current.map((node) => (node.id === selectedNodeId ? { ...node, ...patch } : node)),
@@ -2830,6 +3230,7 @@ export default function Home() {
       topics: [],
       graphAnnotations: [],
       deliveryPackages: [],
+      biblioCorpus: emptyBiblioCorpus(),
     };
     setWorkspaces((current) => [...current, created]);
     setActiveWorkspaceId(id);
@@ -3340,7 +3741,7 @@ export default function Home() {
 
       if (section === "graph" && ctrl && key === "a") {
         event.preventDefault();
-        const ids = visibleNodes.map((node) => node.id);
+        const ids = graphNodes.map((node) => node.id);
         setSelectedNodeIds(ids);
         setSelectedNodeId(ids.at(-1) ?? "");
         return;
@@ -3392,7 +3793,7 @@ export default function Home() {
     };
     window.addEventListener("keydown", onGraphKeyDown);
     return () => window.removeEventListener("keydown", onGraphKeyDown);
-  }, [section, selectedNodeIds, visibleNodes, nodes, relations, activeWorkspaceId]);
+  }, [section, selectedNodeIds, graphNodes, nodes, relations, activeWorkspaceId]);
 
   const assetMenuTarget = assetContextMenu?.assetId
     ? assets.find((asset) => asset.id === assetContextMenu.assetId)
@@ -3666,28 +4067,52 @@ export default function Home() {
               </button>
 
               <div className="node-type-list">
-                {(Object.keys(kindMeta) as NodeKind[]).map((kind) => (
-                  <button
-                    type="button"
-                    key={kind}
-                    className={nodeKindFilter === kind ? "active" : ""}
-                    onClick={() => {
-                      setNodeKindFilter((current) =>
-                        current === kind ? "all" : kind,
-                      );
-                      setSection("graph");
-                    }}
-                  >
-                    <span
-                      className="node-type-mark"
-                      style={{ "--node-color": kindMeta[kind].color } as CSSProperties}
+                {(Object.keys(kindMeta) as NodeKind[]).map((kind) => {
+                  const hidden = hiddenNodeKinds.has(kind);
+                  return (
+                    <div
+                      className={`node-type-row${nodeKindFilter === kind ? " active" : ""}${hidden ? " is-hidden" : ""}`}
+                      key={kind}
                     >
-                      {kindMeta[kind].mark}
-                    </span>
-                    <strong>{kindMeta[kind].label}</strong>
-                    <small>{typeCounts[kind]}</small>
-                  </button>
-                ))}
+                      <button
+                        type="button"
+                        className="node-type-visibility"
+                        aria-pressed={!hidden}
+                        aria-label={hidden ? `显示${kindMeta[kind].label}` : `隐藏${kindMeta[kind].label}`}
+                        title={hidden ? "在图谱中显示" : "在图谱中隐藏"}
+                        onClick={() => {
+                          setHiddenNodeKinds((current) => {
+                            const next = new Set(current);
+                            if (next.has(kind)) next.delete(kind);
+                            else next.add(kind);
+                            return next;
+                          });
+                        }}
+                      >
+                        <LayerVisibilityIcon hidden={hidden} />
+                      </button>
+                      <button
+                        type="button"
+                        className="node-type-item"
+                        onClick={() => {
+                          setNodeKindFilter((current) =>
+                            current === kind ? "all" : kind,
+                          );
+                          setSection("graph");
+                        }}
+                      >
+                        <span
+                          className="node-type-mark"
+                          style={{ "--node-color": kindMeta[kind].color } as CSSProperties}
+                        >
+                          {kindMeta[kind].mark}
+                        </span>
+                        <strong>{kindMeta[kind].label}</strong>
+                        <small>{typeCounts[kind]}</small>
+                      </button>
+                    </div>
+                  );
+                })}
               </div>
 
               <button
@@ -3791,8 +4216,16 @@ export default function Home() {
                   </div>
                   <div className="graph-intro-actions">
                     <p>
-                      {visibleNodes.length} 个可见节点 · {relations.length} 条关系 · 滚轮缩放
+                      {graphNodes.length} 个可见节点 · {graphRelationCount} 条关系
+                      {hiddenNodeKinds.size > 0
+                        ? ` · 已隐藏 ${hiddenNodeKinds.size} 类`
+                        : ""}
                     </p>
+                    {biblioNodeCount > 0 ? (
+                      <button type="button" onClick={arrangeBiblioGraphNodes}>
+                        一键排列
+                      </button>
+                    ) : null}
                     <button type="button" onClick={() => setInspectorOpen((open) => !open)}>
                       {inspectorOpen ? "隐藏属性" : "显示属性"}
                     </button>
@@ -3908,7 +4341,7 @@ export default function Home() {
                           ? "#c8b98e"
                           : kindMeta[
                               (node.data as KnowledgeFlowNode["data"]).node.kind
-                            ].color
+                            ]?.color ?? "#68624a"
                       }
                       nodeStrokeColor="#171714"
                       maskColor="rgba(247, 245, 239, 0.76)"
@@ -4010,6 +4443,16 @@ export default function Home() {
               />
             )}
 
+            {section === "biblio" && (
+              <StudioBiblioCanvas
+                corpus={biblioCorpus}
+                onCorpusChange={setBiblioCorpus}
+                onWriteRecords={writeBiblioRecords}
+                onArrangeGraph={arrangeBiblioGraphNodes}
+                onNotice={flash}
+              />
+            )}
+
             {section === "nodes" && (
               <div className="nodes-view">
                 <div className="section-hero compact">
@@ -4040,7 +4483,7 @@ export default function Home() {
                     <span>资源</span>
                     <span>更新</span>
                   </div>
-                  {visibleNodes.map((node, index) => (
+                  {listedNodes.map((node, index) => (
                     <button
                       type="button"
                       key={node.id}

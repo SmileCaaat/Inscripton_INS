@@ -1867,8 +1867,37 @@ kbd {
   border-bottom: 1px solid var(--line);
 }
 
-.node-type-list button {
-  width: 100%;
+.node-type-row {
+  display: grid;
+  grid-template-columns: 22px minmax(0, 1fr);
+  align-items: center;
+  gap: 2px;
+}
+
+.node-type-row.is-hidden {
+  opacity: 0.4;
+}
+
+.node-type-visibility {
+  width: 22px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+  color: var(--ink);
+}
+
+.node-type-visibility svg {
+  width: 13px;
+  height: 13px;
+  display: block;
+}
+
+.node-type-item {
+  min-width: 0;
   height: 34px;
   display: grid;
   grid-template-columns: 25px 1fr auto;
@@ -1881,7 +1910,9 @@ kbd {
   text-align: left;
 }
 
-.node-type-list button:hover {
+.node-type-visibility:hover,
+.node-type-item:hover,
+.node-type-row.active .node-type-item {
   background: rgba(255, 255, 255, 0.7);
 }
 
@@ -2146,11 +2177,13 @@ kbd {
 }
 
 .graph-intro {
-  height: 68px;
-  flex: 0 0 68px;
+  min-height: 68px;
+  height: auto;
+  flex: 0 0 auto;
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 12px;
   padding: 10px 17px;
   border-bottom: 1px solid var(--line);
 }
@@ -2180,7 +2213,10 @@ kbd {
 .graph-intro-actions {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
+  justify-content: flex-end;
   gap: 10px;
+  max-width: 64%;
 }
 
 .graph-intro-actions button {
@@ -2192,9 +2228,348 @@ kbd {
   font-size: 8px;
 }
 
-.graph-intro-actions button:hover {
+.graph-intro-actions button:hover,
+.graph-intro-actions button.is-active {
   border-color: var(--ink);
   color: var(--ink);
+}
+
+.studio-biblio-view {
+  min-height: 0;
+}
+
+.studio-biblio-canvas {
+  min-height: 0;
+  flex: 1;
+  position: relative;
+  overflow: hidden;
+  background: #f7f5ef;
+}
+
+.studio-biblio-vos-shell {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+}
+
+.studio-biblio-vos-bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  align-items: center;
+  flex: 0 0 auto;
+  padding: 7px 12px;
+  border-bottom: 1px solid var(--line);
+  background: #fbfaf6;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.studio-biblio-vos-switch {
+  display: flex;
+  gap: 0;
+  border: 1px solid var(--line);
+  background: #fff;
+}
+
+.studio-biblio-vos-switch button {
+  height: 24px;
+  padding: 0 9px;
+  border: 0;
+  background: transparent;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 24px;
+}
+
+.studio-biblio-vos-switch button + button {
+  border-left: 1px solid var(--line);
+}
+
+.studio-biblio-vos-switch button:hover,
+.studio-biblio-vos-switch button.is-active {
+  background: var(--ink);
+  color: #fff;
+}
+
+.studio-biblio-vos {
+  width: 100%;
+  min-height: 0;
+  flex: 1;
+  border: 0;
+}
+
+.studio-biblio-vos > * {
+  width: 100%;
+  height: 100%;
+}
+
+.studio-biblio-search {
+  display: grid;
+  grid-template-columns: minmax(180px, 2fr) 72px 72px 120px 72px minmax(140px, 1fr) minmax(140px, 1fr);
+  gap: 8px 10px;
+  align-items: end;
+  padding: 10px 17px 8px;
+  border-bottom: 1px solid var(--line);
+  background: #fbfaf6;
+}
+
+.studio-biblio-search label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 8px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+}
+
+.studio-biblio-search input,
+.studio-biblio-search select {
+  width: 100%;
+  min-width: 0;
+  height: 28px;
+  padding: 0 8px;
+  border: 1px solid var(--line);
+  background: #fff;
+  color: var(--ink);
+  font-size: 11px;
+}
+
+.studio-biblio-search-actions {
+  grid-column: 1 / -1;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+
+.studio-biblio-search-actions button,
+.studio-biblio-search-actions a {
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid var(--line);
+  background: #fff;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 26px;
+  text-decoration: none;
+}
+
+.studio-biblio-search-actions button:hover,
+.studio-biblio-search-actions a:hover {
+  border-color: var(--ink);
+  color: var(--ink);
+}
+
+.studio-biblio-search-actions button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+.studio-biblio-search-actions .button-primary {
+  border-color: var(--ink);
+  background: var(--ink);
+  color: #fffefa;
+  box-shadow: 2px 2px 0 var(--rust);
+}
+
+.studio-biblio-search-actions .button-primary:hover {
+  background: var(--rust);
+  color: #fffefa;
+}
+
+.studio-biblio-body {
+  min-height: 0;
+  flex: 1;
+  overflow: auto;
+}
+
+.studio-biblio-table {
+  min-width: 760px;
+}
+
+.studio-biblio-row {
+  display: grid;
+  grid-template-columns: 28px minmax(180px, 2.2fr) 52px minmax(120px, 1.2fr) minmax(120px, 1.2fr) 48px 72px;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 17px;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  background: transparent;
+  text-align: left;
+  color: var(--ink);
+  cursor: pointer;
+  font-size: 11px;
+}
+
+.studio-biblio-row label {
+  display: flex;
+  align-items: center;
+}
+
+.studio-biblio-row.is-head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  background: #f7f5ef;
+  color: var(--muted);
+  font-size: 8px;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  cursor: default;
+}
+
+.studio-biblio-row strong,
+.studio-biblio-row span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.studio-biblio-row strong {
+  font-weight: 600;
+}
+
+.studio-biblio-row:hover,
+.studio-biblio-row.is-open {
+  background: #fff;
+}
+
+.studio-biblio-detail {
+  padding: 0 17px 12px 53px;
+  border-bottom: 1px solid var(--line);
+  background: #fff;
+}
+
+.studio-biblio-detail p {
+  margin: 0 0 6px;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+}
+
+.studio-biblio-error {
+  margin: 0;
+  padding: 8px 17px;
+  color: var(--rust);
+  font-size: 11px;
+}
+
+.studio-biblio-write-hint {
+  margin: 0;
+  padding: 0 17px 8px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.studio-biblio-stats {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(180px, 1fr));
+  align-items: stretch;
+  gap: 12px;
+  padding: 12px 17px 24px;
+  overflow: auto;
+}
+
+.studio-biblio-stat {
+  display: flex;
+  min-width: 0;
+  min-height: 240px;
+  flex-direction: column;
+  overflow: hidden;
+  border: 1px solid var(--line);
+  background: #fff;
+}
+
+.studio-biblio-stat h2 {
+  flex: none;
+  margin: 0;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line);
+  background: #f7f5ef;
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.studio-biblio-stat p {
+  margin: 0;
+  padding: 12px;
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.studio-biblio-stat ol {
+  min-height: 0;
+  flex: 1;
+  margin: 0;
+  padding: 4px 12px 12px;
+  overflow: auto;
+  list-style: none;
+}
+
+.studio-biblio-stat li {
+  display: flex;
+  gap: 10px;
+  justify-content: space-between;
+  padding: 7px 0;
+  border-bottom: 1px solid var(--line);
+  font-size: 11px;
+}
+
+.studio-biblio-stat em {
+  min-width: 0;
+  overflow: hidden;
+  font-style: normal;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.studio-biblio-stat strong {
+  flex: none;
+  color: var(--muted);
+  font-weight: 600;
+}
+
+@media (max-width: 1100px) {
+  .studio-biblio-stats {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+.studio-biblio-network-note {
+  position: absolute;
+  z-index: 2;
+  left: 12px;
+  top: 48px;
+  max-width: 320px;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  background: rgba(251, 250, 246, 0.94);
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.5;
+  pointer-events: none;
+}
+
+@media (max-width: 1100px) {
+  .studio-biblio-search {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+  }
+
+  .studio-biblio-query {
+    grid-column: 1 / -1;
+  }
 }
 
 .graph-canvas,
@@ -2567,6 +2942,88 @@ kbd {
   pointer-events: none;
 }
 
+.knowledge-card.is-biblio {
+  min-height: 108px;
+}
+
+.biblio-author-chip,
+.biblio-paper-row {
+  box-sizing: border-box;
+  position: relative;
+  cursor: grab;
+  user-select: none;
+  text-align: left;
+}
+
+.biblio-author-chip {
+  width: 176px;
+  height: 30px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 8px 0 10px;
+  border: 1px solid #c9beaf;
+  border-left: 3px solid #6b5344;
+  background: #f4efe6;
+}
+
+.biblio-author-chip b {
+  min-width: 0;
+  overflow: hidden;
+  font-size: 11px;
+  font-weight: 650;
+  letter-spacing: 0;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.biblio-author-chip small {
+  margin-left: auto;
+  color: var(--muted);
+  font-size: 9px;
+  font-variant-numeric: tabular-nums;
+}
+
+.biblio-paper-row {
+  width: 280px;
+  height: 36px;
+  display: grid;
+  grid-template-columns: 42px minmax(0, 1fr);
+  align-items: center;
+  padding-right: 10px;
+  border: 1px solid #c5ccd6;
+  border-left: 3px solid #445a78;
+  background: #f5f7f9;
+}
+
+.biblio-paper-year {
+  color: #445a78;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  text-align: center;
+}
+
+.biblio-paper-row > strong {
+  overflow: hidden;
+  font-family: Georgia, "Noto Serif SC", serif;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.biblio-author-chip.selected,
+.biblio-paper-row.selected {
+  box-shadow: 3px 3px 0 color-mix(in srgb, var(--node-color) 22%, transparent);
+}
+
+.biblio-author-chip .knowledge-handle,
+.biblio-paper-row .knowledge-handle {
+  width: 9px !important;
+  height: 9px !important;
+}
+
 .knowledge-handle {
   width: 13px !important;
   height: 13px !important;
@@ -2826,6 +3283,13 @@ kbd {
 .react-flow__edge.knowledge-edge.selected .react-flow__edge-path {
   stroke: var(--rust) !important;
   stroke-width: 1.8 !important;
+}
+
+.react-flow__edge.biblio-edge:hover .react-flow__edge-path,
+.react-flow__edge.biblio-edge.selected .react-flow__edge-path {
+  stroke: #6b5344 !important;
+  stroke-width: 1.5 !important;
+  opacity: 1 !important;
 }
 
 .canvas-controls {
