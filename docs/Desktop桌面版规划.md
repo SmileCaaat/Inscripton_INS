@@ -1,6 +1,22 @@
 # INS Desktop 桌面版规划
 
-更新时间：2026-07-28
+更新时间：2026-07-31
+
+## 当前进展
+
+第一版 Electron 桌面壳已经完成：
+
+- 现有 INS Studio 界面可构建为离线 Renderer。
+- Electron Main 与隔离的 Preload 已接入。
+- 使用 INS Logo 作为 Windows 应用图标。
+- 已生成并启动验证 Windows x64 便携试用版。
+- 浏览器版构建与 localhost 开发方式保持不变。
+
+当前试用版主要用于验证界面、图谱、参考板和各类预览在 Electron 中的运行情况。真实工作区文件 API、安装程序和代码签名仍按后续阶段推进。
+
+### 发布签名
+
+Windows 正式发布包使用 Electron Builder 的 SHA-256 签名配置。打包机器需要提供受信任的 `.p12` 或 `.pfx` 证书，并通过 `CSC_LINK` 与 `CSC_KEY_PASSWORD` 注入；证书不进入仓库。未提供证书时只能生成内部测试包，Windows 可能显示未知发布者提示。
 
 ## 目标
 

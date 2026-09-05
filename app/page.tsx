@@ -13,17 +13,22 @@ import {
   type DragEvent,
   type InputHTMLAttributes,
   type MouseEvent as ReactMouseEvent,
+  type PointerEvent as ReactPointerEvent,
 } from "react";
 import {
   Background,
+  BaseEdge,
   Controls,
+  EdgeLabelRenderer,
   Handle,
   MiniMap,
   Panel,
   Position,
   SelectionMode,
   applyNodeChanges,
+  getBezierPath,
   type Edge as FlowEdge,
+  type EdgeProps,
   type Connection,
   type FinalConnectionState,
   type Node as FlowNode,
@@ -42,19 +47,74 @@ import {
   ApplicationContextMenu,
   type ApplicationContextMenuItem,
 } from "./application-context-menu";
+import { AssetPreview } from "./asset-preview";
+import { ArchiveView } from "./archive-view";
+import { OcrPanel } from "./ocr-panel";
+import {
+  connectWorkspaceDirectory,
+  createWorkspaceDeliveryDirectories,
+  renameWorkspaceAssetFile,
+  revealLocalAsset,
+  supportsWorkspaceDirectoryAccess,
+  workspaceAssetLocalPath,
+  workspaceDirectoryIsConnected,
+  writeWorkspaceAssetFile,
+} from "./workspace-files";
+import {
+  jsonDataTemplate,
+  markdownNoteTemplate,
+  mimeTypeForTextFile,
+  uniqueAssetFileName,
+  type TextSaveReason,
+} from "./text-documents";
+import { isTypingTarget, nativeFilePath, replacePathFileName } from "./studio-hotkeys";
+import { hasMapLocation, hasMapPolygon, parseCoordinate, parseYear, type StudioMapGeo } from "./geo";
+import type { MapPlaceDraft } from "./map-io";
+import {
+  GUIA_ZONE_RING,
+  HISTORIC_CENTRE_RING,
+  RUINS_PRECINCT_RING,
+  SAMPLE_NODE_YEARS,
+  SENADO_SQUARE_RING,
+} from "./sample-map-inscriptions";
+import {
+  applyBiblioArrange,
+  BIBLIO_AUTHOR_HEIGHT,
+  BIBLIO_AUTHOR_WIDTH,
+  BIBLIO_DOC_HEIGHT,
+  BIBLIO_DOC_WIDTH,
+  BIBLIO_GRAPH_TAG,
+  biblioNodeSummary,
+  biblioTypeLabel,
+  emptyBiblioCorpus,
+  isBiblioAuthorNode,
+  isBiblioDocumentNode,
+  isBiblioGraphNode,
+  matchingKnowledgeIds,
+  migrateBiblioAuthorNode,
+  normalizeDoi,
+  type BiblioCorpus,
+  type BiblioRecord,
+} from "./biblio-types";
 
 type Section =
   | "nodes"
   | "graph"
+  | "map"
+  | "biblio"
   | "assets"
   | "boards"
+  | "archive"
+  | "ocr"
   | "narrative"
   | "topics";
+
 type NodeKind =
   | "Space"
   | "Person"
   | "Event"
   | "Document"
+  | "Author"
   | "Artifact"
   | "Media"
   | "Concept";
@@ -67,8 +127,13 @@ type KnowledgeNode = {
   period: string;
   summary: string;
   tags: string[];
+  source?: string;
+  rights?: string;
   assetCount: number;
   assetIds?: string[];
+  geo?: StudioMapGeo;
+  yearFrom?: number;
+  yearTo?: number;
   x: number;
   y: number;
 };
@@ -110,6 +175,16 @@ type GraphAnnotation = {
   height: number;
 };
 
+type DeliveryPackage = {
+  id: string;
+  name: string;
+  sourceAssetId: string;
+  sourceCopyAssetId: string;
+  path: string;
+  createdAt: string;
+  physicalDirectory: boolean;
+};
+
 type WorkspaceRecord = {
   id: string;
   name: string;
@@ -119,6 +194,8 @@ type WorkspaceRecord = {
   scenes: NarrativeScene[];
   topics: TopicRecord[];
   graphAnnotations: GraphAnnotation[];
+  deliveryPackages: DeliveryPackage[];
+  biblioCorpus: BiblioCorpus;
 };
 
 type WorkspaceVersion = {
@@ -133,6 +210,7 @@ type KnowledgeFlowNode = FlowNode<
   {
     node: KnowledgeNode;
     assets: AssetItem[];
+    degree?: number;
     onAssetDrop: (nodeId: string, assetId: string) => void;
   },
   "knowledge"
@@ -145,12 +223,35 @@ type GraphAnnotationFlowNode = FlowNode<
 
 type StudioFlowNode = KnowledgeFlowNode | GraphAnnotationFlowNode;
 
+type EditableRelationEdgeData = Record<string, unknown> & {
+  label: string;
+  draft: string;
+  editing: boolean;
+  quiet?: boolean;
+  emphasis?: boolean;
+  onBeginEdit: (relationId: string) => void;
+  onDraftChange: (value: string) => void;
+  onCommit: (relationId: string, value: string) => void;
+  onCancel: () => void;
+};
+
+type EditableRelationFlowEdge = FlowEdge<
+  EditableRelationEdgeData,
+  "editableRelation"
+>;
+
+type GraphClipboard = {
+  nodes: KnowledgeNode[];
+  relations: Relation[];
+};
+
 type GraphHistoryEntry = {
   workspaceId: string;
   nodes: KnowledgeNode[];
   relations: Relation[];
   assets: AssetItem[];
   graphAnnotations: GraphAnnotation[];
+  deliveryPackages: DeliveryPackage[];
 };
 
 type GraphContextMenuState = {
@@ -183,15 +284,62 @@ type EntryLike = {
   };
 };
 
+const ASSET_PREVIEW_DEFAULT_WIDTH = 420;
+const ASSET_PREVIEW_MIN_WIDTH = 300;
+const ASSET_GALLERY_MIN_WIDTH = 320;
+const ASSET_PANEL_DIVIDER_WIDTH = 7;
+
 const kindMeta: Record<NodeKind, { label: string; mark: string; color: string }> = {
   Space: { label: "空间", mark: "S", color: "#315c4b" },
   Person: { label: "人物", mark: "P", color: "#7f3f2e" },
   Event: { label: "事件", mark: "E", color: "#9a641e" },
   Document: { label: "文献", mark: "D", color: "#445a78" },
+  Author: { label: "文献作者", mark: "作", color: "#6b5344" },
   Artifact: { label: "物件", mark: "A", color: "#6c4d72" },
   Media: { label: "媒介", mark: "M", color: "#42666b" },
   Concept: { label: "概念", mark: "C", color: "#68624a" },
 };
+
+function LayerVisibilityIcon({ hidden }: { hidden: boolean }) {
+  if (hidden) {
+    return (
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <path
+          d="M3.4 3.4 20.6 20.6"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.8"
+          strokeLinecap="round"
+        />
+        <path
+          d="M9.8 9.9A3 3 0 0 0 12 15c.5 0 1-.1 1.4-.4M17.5 13.8C19.2 12.7 20.5 12 20.5 12s-3.6-7-9.5-7c-1.2 0-2.3.3-3.3.7M6.4 6.8C4.4 8.3 2.5 12 2.5 12s1.5 3 4.2 5.1"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="1.8"
+          strokeLinecap="round"
+        />
+      </svg>
+    );
+  }
+  return (
+    <svg viewBox="0 0 24 24" aria-hidden="true">
+      <path
+        d="M2.5 12s3.6-7 9.5-7 9.5 7 9.5 7-3.6 7-9.5 7-9.5-7-9.5-7Z"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.8"
+      />
+      <circle
+        cx="12"
+        cy="12"
+        r="2.8"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth="1.8"
+      />
+    </svg>
+  );
+}
 
 const sectionMeta: Array<{
   id: Section;
@@ -199,12 +347,14 @@ const sectionMeta: Array<{
   shortcut: string;
   disabled?: boolean;
 }> = [
-  { id: "nodes", label: "节点", shortcut: "1" },
-  { id: "graph", label: "图谱", shortcut: "2" },
-  { id: "assets", label: "资源", shortcut: "3" },
-  { id: "boards", label: "参考板", shortcut: "4" },
-  { id: "narrative", label: "Narrative", shortcut: "5", disabled: true },
-  { id: "topics", label: "专题", shortcut: "6", disabled: true },
+  { id: "assets", label: "资源", shortcut: "1" },
+  { id: "boards", label: "参考板", shortcut: "2" },
+  { id: "nodes", label: "节点", shortcut: "3" },
+  { id: "graph", label: "图谱", shortcut: "4" },
+  { id: "map", label: "地图", shortcut: "5" },
+  { id: "biblio", label: "计量", shortcut: "8" },
+  { id: "archive", label: "归档", shortcut: "6" },
+  { id: "ocr", label: "OCR", shortcut: "7" },
 ];
 
 const initialNodes: KnowledgeNode[] = [
@@ -219,6 +369,12 @@ const initialNodes: KnowledgeNode[] = [
     tags: ["建筑遗产", "城市空间", "文化记忆"],
     assetCount: 18,
     assetIds: ["asset-1", "asset-2", "asset-6"],
+    geo: {
+      longitude: 113.54072,
+      latitude: 22.19756,
+      confidence: 0.95,
+      polygon: RUINS_PRECINCT_RING,
+    },
     x: 330,
     y: 190,
   },
@@ -233,6 +389,7 @@ const initialNodes: KnowledgeNode[] = [
     tags: ["火灾", "建筑变迁"],
     assetCount: 6,
     assetIds: ["asset-4"],
+    geo: { longitude: 113.54072, latitude: 22.19756, confidence: 0.9 },
     x: 605,
     y: 95,
   },
@@ -275,12 +432,161 @@ const initialNodes: KnowledgeNode[] = [
     tags: ["石构", "建筑装饰"],
     assetCount: 22,
     assetIds: ["asset-1", "asset-2"],
+    geo: { longitude: 113.54086, latitude: 22.19738, confidence: 0.92 },
     x: 610,
     y: 330,
   },
+  {
+    id: "space-monte",
+    kind: "Space",
+    title: "大炮台",
+    subtitle: "圣保禄炮台 · 俯瞰高地",
+    period: "1617—至今",
+    summary:
+      "紧邻大三巴的早期近代化城防，也是理解高地视线、防御与城市制高点的关键场所。",
+    tags: ["城防", "城市制高点"],
+    assetCount: 3,
+    assetIds: [],
+    geo: { longitude: 113.54245, latitude: 22.19728, confidence: 0.93 },
+    x: 470,
+    y: 40,
+  },
+  {
+    id: "space-senado",
+    kind: "Space",
+    title: "议事亭前地",
+    subtitle: "市政广场 · 历史城区核心",
+    period: "16世纪—至今",
+    summary:
+      "澳门半岛的公共礼仪与商业中心，连接大三巴石阶轴线与南部妈阁的城市生活。",
+    tags: ["广场", "城市轴线"],
+    assetCount: 2,
+    assetIds: [],
+    geo: {
+      longitude: 113.53948,
+      latitude: 22.19364,
+      confidence: 0.94,
+      polygon: SENADO_SQUARE_RING,
+    },
+    x: 330,
+    y: 430,
+  },
+  {
+    id: "space-stjoseph",
+    kind: "Space",
+    title: "圣若瑟修院圣堂",
+    subtitle: "岗顶 · 耶稣会修院",
+    period: "1728—至今",
+    summary:
+      "耶稣会在澳门的另一处知识与礼仪空间，可与圣保禄学院遗址对照阅读。",
+    tags: ["修院", "巴洛克"],
+    assetCount: 2,
+    assetIds: [],
+    geo: { longitude: 113.53858, latitude: 22.19228, confidence: 0.91 },
+    x: 80,
+    y: 500,
+  },
+  {
+    id: "space-ama",
+    kind: "Space",
+    title: "妈阁庙",
+    subtitle: "海港祠庙 · 世界遗产点",
+    period: "15世纪—至今",
+    summary:
+      "澳门地名与航海信仰的起点之一，也是历史城区南端最重要的宗教场所。",
+    tags: ["妈祖", "港口"],
+    assetCount: 3,
+    assetIds: [],
+    geo: { longitude: 113.53118, latitude: 22.18612, confidence: 0.96 },
+    x: 330,
+    y: 620,
+  },
+  {
+    id: "space-guia",
+    kind: "Space",
+    title: "东望洋炮台",
+    subtitle: "核心区二 · 灯塔与城防",
+    period: "1622—至今",
+    summary:
+      "半岛东侧制高点，灯塔、教堂与炮台叠合，可回看大三巴高地在城市中的位置。",
+    tags: ["灯塔", "城防"],
+    assetCount: 2,
+    assetIds: [],
+    geo: {
+      longitude: 113.54972,
+      latitude: 22.19661,
+      confidence: 0.93,
+      polygon: GUIA_ZONE_RING,
+    },
+    x: 820,
+    y: 190,
+  },
+  {
+    id: "event-unesco",
+    kind: "Event",
+    title: "2005年列入世界遗产",
+    subtitle: "澳门历史城区",
+    period: "2005.07.15",
+    summary:
+      "“澳门历史城区”列入世界遗产名录，把大三巴、议事亭前地、妈阁庙等地点连成一条可核对的遗产链条。",
+    tags: ["世界遗产", "申报"],
+    assetCount: 1,
+    assetIds: [],
+    geo: { longitude: 113.54035, latitude: 22.19415, confidence: 0.88 },
+    x: 820,
+    y: 430,
+  },
+  {
+    id: "space-historic-centre",
+    kind: "Space",
+    title: "澳门历史城区",
+    subtitle: "核心区一 · 妈阁至大炮台",
+    period: "16世纪—至今",
+    summary:
+      "世界遗产「澳门历史城区」不是一大块行政边界。核心区一是妈阁庙到大炮台的旧城走廊，核心区二是东望洋山，两块加起来大约 16 公顷。图上的多边形是按这条走廊画的示意范围，存在节点的 geo.polygon 里。",
+    tags: ["世界遗产", "历史城区"],
+    assetCount: 0,
+    assetIds: [],
+    geo: {
+      longitude: 113.536,
+      latitude: 22.191,
+      confidence: 0.86,
+      polygon: HISTORIC_CENTRE_RING,
+    },
+    x: 560,
+    y: 520,
+  },
+  {
+    id: "media-ortho",
+    kind: "Media",
+    title: "大三巴立面正射影像",
+    subtitle: "图像印记 · 测绘",
+    period: "2019",
+    summary: "把立面现状图像钉在前壁坐标上，作为可核对的图像印记。",
+    tags: ["正射", "测绘"],
+    assetCount: 1,
+    assetIds: ["asset-1"],
+    geo: { longitude: 113.54086, latitude: 22.19738, confidence: 0.97 },
+    x: 740,
+    y: 330,
+  },
+  {
+    id: "media-print",
+    kind: "Media",
+    title: "1835火灾后遗址版画",
+    subtitle: "图像印记 · 历史图像",
+    period: "1836—19世纪",
+    summary: "火灾之后的视觉记录，落在高地坐标上，用来对照今天的遗存。",
+    tags: ["版画", "历史图像"],
+    assetCount: 1,
+    assetIds: ["asset-4"],
+    geo: { longitude: 113.5406, latitude: 22.1975, confidence: 0.8 },
+    x: 740,
+    y: 95,
+  },
 ];
 
-const relations: Relation[] = [
+const initialRelations: Relation[] = [
   {
     id: "rel-1",
     source: "document-macau",
@@ -315,6 +621,104 @@ const relations: Relation[] = [
     target: "space-ruins",
     type: "构成",
     evidence: "遗产构成说明",
+  },
+  {
+    id: "rel-6",
+    source: "space-ruins",
+    target: "space-monte",
+    type: "毗邻",
+    evidence: "高地城防关系",
+  },
+  {
+    id: "rel-7",
+    source: "space-ruins",
+    target: "space-senado",
+    type: "城市轴线",
+    evidence: "大三巴街—议事亭前地",
+  },
+  {
+    id: "rel-8",
+    source: "person-jesuit",
+    target: "space-stjoseph",
+    type: "营建与使用",
+    evidence: "圣若瑟修院档案",
+  },
+  {
+    id: "rel-9",
+    source: "space-senado",
+    target: "space-stjoseph",
+    type: "相邻",
+    evidence: "岗顶与市政广场",
+  },
+  {
+    id: "rel-10",
+    source: "space-ama",
+    target: "space-senado",
+    type: "城区南北",
+    evidence: "历史城区遗产构成",
+  },
+  {
+    id: "rel-11",
+    source: "space-guia",
+    target: "space-ruins",
+    type: "眺望",
+    evidence: "东望洋—大三巴视线",
+  },
+  {
+    id: "rel-12",
+    source: "event-unesco",
+    target: "space-ruins",
+    type: "列入",
+    evidence: "世界遗产名录：澳门历史城区",
+  },
+  {
+    id: "rel-13",
+    source: "event-unesco",
+    target: "space-ama",
+    type: "列入",
+    evidence: "世界遗产名录：澳门历史城区",
+  },
+  {
+    id: "rel-14",
+    source: "event-unesco",
+    target: "space-senado",
+    type: "列入",
+    evidence: "世界遗产名录：澳门历史城区",
+  },
+  {
+    id: "rel-15",
+    source: "space-historic-centre",
+    target: "space-ruins",
+    type: "包含",
+    evidence: "澳门历史城区遗产构成",
+  },
+  {
+    id: "rel-16",
+    source: "space-historic-centre",
+    target: "space-ama",
+    type: "包含",
+    evidence: "澳门历史城区遗产构成",
+  },
+  {
+    id: "rel-17",
+    source: "space-historic-centre",
+    target: "space-senado",
+    type: "包含",
+    evidence: "澳门历史城区遗产构成",
+  },
+  {
+    id: "rel-18",
+    source: "media-ortho",
+    target: "artifact-facade",
+    type: "图像记录",
+    evidence: "立面正射影像",
+  },
+  {
+    id: "rel-19",
+    source: "media-print",
+    target: "event-fire",
+    type: "图像记录",
+    evidence: "火灾后遗址版画",
   },
 ];
 
@@ -441,20 +845,29 @@ const blankScene: NarrativeScene = {
   layout: "hero",
 };
 
+function stampSampleNode(node: KnowledgeNode): KnowledgeNode {
+  const years = SAMPLE_NODE_YEARS[node.id];
+  return {
+    ...node,
+    tags: [...node.tags],
+    assetIds: [...(node.assetIds ?? [])],
+    yearFrom: node.yearFrom ?? years?.yearFrom,
+    yearTo: node.yearTo ?? years?.yearTo,
+  };
+}
+
 function createInitialWorkspace(): WorkspaceRecord {
   return {
     id: "workspace-ruins",
     name: "大三巴高地研究",
-    nodes: initialNodes.map((node) => ({
-      ...node,
-      tags: [...node.tags],
-      assetIds: [...(node.assetIds ?? [])],
-    })),
-    relations: relations.map((relation) => ({ ...relation })),
+    nodes: initialNodes.map((node) => stampSampleNode(node)),
+    relations: initialRelations.map((relation) => ({ ...relation })),
     assets: initialAssets.map((asset) => ({ ...asset })),
     scenes: initialScenes.map((scene) => ({ ...scene })),
     topics: initialTopics.map((topic) => ({ ...topic })),
     graphAnnotations: [],
+    deliveryPackages: [],
+    biblioCorpus: emptyBiblioCorpus(),
   };
 }
 
@@ -521,10 +934,15 @@ function duplicateAssetName(name: string) {
 }
 
 function StudioLogo() {
+  const logoSrc =
+    typeof window !== "undefined" && window.location.protocol === "file:"
+      ? "./ins-logo.png"
+      : "/ins-logo.png";
+
   return (
     <div className="brand-lockup">
       <div className="brand-logo-frame">
-        <img className="brand-logo-image" src="/ins-logo.png" alt="INS" />
+        <img className="brand-logo-image" src={logoSrc} alt="INS" />
       </div>
       <div>
         <strong>Inscription</strong>
@@ -539,14 +957,23 @@ const KnowledgeGraphNode = memo(function KnowledgeGraphNode({
   selected,
 }: NodeProps<KnowledgeFlowNode>) {
   const node = data.node;
+  const meta = kindMeta[node.kind] ?? kindMeta.Concept;
+  const author = isBiblioAuthorNode(node);
+  const paper = isBiblioDocumentNode(node);
   return (
     <div
-      className={`knowledge-card ${selected ? "selected" : ""}`}
+      className={
+        author
+          ? `biblio-author-chip${selected ? " selected" : ""}`
+          : paper
+            ? `biblio-paper-row${selected ? " selected" : ""}`
+            : `knowledge-card${selected ? " selected" : ""}`
+      }
       data-node-id={node.id}
       role="button"
       tabIndex={0}
-      aria-label={`${kindMeta[node.kind].label}节点：${node.title}`}
-      style={{ "--node-color": kindMeta[node.kind].color } as CSSProperties}
+      aria-label={`${meta.label}节点：${node.title}`}
+      style={{ "--node-color": meta.color } as CSSProperties}
       onDragOver={(event) => {
         if (event.dataTransfer.types.includes("application/x-ins-asset")) {
           event.preventDefault();
@@ -566,27 +993,41 @@ const KnowledgeGraphNode = memo(function KnowledgeGraphNode({
         className="knowledge-handle knowledge-handle-target"
         aria-label={`连接到${node.title}`}
       />
-      <div className="knowledge-card-topline">
-        <span>{kindMeta[node.kind].label.toUpperCase()} NODE</span>
-        <i>{data.assets.length}</i>
-      </div>
-      <strong>{node.title}</strong>
-      <small>{node.period}</small>
-      <div className="knowledge-card-tags">
-        {node.tags.slice(0, 2).map((tag) => (
-          <span key={tag}>{tag}</span>
-        ))}
-      </div>
-      <div className="node-contained-assets">
-        {data.assets.slice(0, 3).map((asset) => (
-          <span key={asset.id} className={`node-asset-chip asset-${asset.kind}`}>
-            <i>{assetGlyph(asset.kind)}</i>
-            <b>{asset.name}</b>
-          </span>
-        ))}
-        {data.assets.length === 0 && <span className="node-drop-hint">拖入资产</span>}
-        {data.assets.length > 3 && <small>＋{data.assets.length - 3}</small>}
-      </div>
+      {author ? (
+        <>
+          <b>{node.title}</b>
+          {data.degree ? <small>{data.degree}</small> : null}
+        </>
+      ) : paper ? (
+        <>
+          <span className="biblio-paper-year">{node.period || "—"}</span>
+          <strong title={node.title}>{node.title}</strong>
+        </>
+      ) : (
+        <>
+          <div className="knowledge-card-topline">
+            <span>{meta.label.toUpperCase()} NODE</span>
+            <i>{data.assets.length}</i>
+          </div>
+          <strong>{node.title}</strong>
+          <small>{node.period}</small>
+          <div className="knowledge-card-tags">
+            {node.tags.slice(0, 2).map((tag) => (
+              <span key={tag}>{tag}</span>
+            ))}
+          </div>
+          <div className="node-contained-assets">
+            {data.assets.slice(0, 3).map((asset) => (
+              <span key={asset.id} className={`node-asset-chip asset-${asset.kind}`}>
+                <i>{assetGlyph(asset.kind)}</i>
+                <b>{asset.name}</b>
+              </span>
+            ))}
+            {data.assets.length === 0 && <span className="node-drop-hint">拖入资产</span>}
+            {data.assets.length > 3 && <small>＋{data.assets.length - 3}</small>}
+          </div>
+        </>
+      )}
       <Handle
         type="source"
         position={Position.Right}
@@ -615,9 +1056,113 @@ const GraphAnnotationNode = memo(function GraphAnnotationNode({
   );
 });
 
+const EditableRelationEdge = memo(function EditableRelationEdge({
+  id,
+  sourceX,
+  sourceY,
+  targetX,
+  targetY,
+  sourcePosition,
+  targetPosition,
+  markerStart,
+  markerEnd,
+  style,
+  data,
+}: EdgeProps<EditableRelationFlowEdge>) {
+  const cancellingRef = useRef(false);
+  const [edgePath, labelX, labelY] = getBezierPath({
+    sourceX,
+    sourceY,
+    targetX,
+    targetY,
+    sourcePosition,
+    targetPosition,
+  });
+
+  if (!data) return null;
+
+  return (
+    <>
+      <BaseEdge
+        id={id}
+        path={edgePath}
+        markerStart={markerStart}
+        markerEnd={markerEnd}
+        style={style}
+        interactionWidth={data.quiet && !data.emphasis ? 12 : 28}
+      />
+      {data.quiet && !data.editing && !data.emphasis ? null : (
+      <EdgeLabelRenderer>
+        <div
+          className={`editable-relation-label nodrag nopan ${
+            data.editing ? "editing" : ""
+          }`}
+          style={{
+            transform: `translate(-50%, -50%) translate(${labelX}px, ${labelY}px)`,
+          }}
+          onPointerDown={(event) => event.stopPropagation()}
+        >
+          {data.editing ? (
+            <input
+              autoFocus
+              aria-label="编辑关系文字"
+              value={data.draft}
+              style={{
+                width: `${Math.max(
+                  84,
+                  Math.min(220, (data.draft.length + 2) * 14),
+                )}px`,
+              }}
+              onFocus={(event) => event.currentTarget.select()}
+              onChange={(event) => data.onDraftChange(event.currentTarget.value)}
+              onBlur={(event) => {
+                if (cancellingRef.current) {
+                  cancellingRef.current = false;
+                  return;
+                }
+                data.onCommit(id, event.currentTarget.value);
+              }}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") {
+                  event.preventDefault();
+                  event.currentTarget.blur();
+                }
+                if (event.key === "Escape") {
+                  event.preventDefault();
+                  event.stopPropagation();
+                  cancellingRef.current = true;
+                  data.onCancel();
+                  event.currentTarget.blur();
+                }
+              }}
+            />
+          ) : (
+            <button
+              type="button"
+              title="点击修改关系文字"
+              aria-label={`修改关系：${data.label}`}
+              onClick={(event) => {
+                event.stopPropagation();
+                data.onBeginEdit(id);
+              }}
+            >
+              {data.label}
+            </button>
+          )}
+        </div>
+      </EdgeLabelRenderer>
+      )}
+    </>
+  );
+});
+
 const graphNodeTypes = {
   knowledge: KnowledgeGraphNode,
   graphAnnotation: GraphAnnotationNode,
+};
+
+const editableRelationEdgeTypes = {
+  editableRelation: EditableRelationEdge,
 };
 
 function buildFlowNodes(
@@ -628,6 +1173,7 @@ function buildFlowNodes(
   onAssetDrop: (nodeId: string, assetId: string) => void,
   current: StudioFlowNode[] = [],
   preserveCanvasPositions = false,
+  degrees: Map<string, number> = new Map(),
 ): StudioFlowNode[] {
   const currentById = new Map(current.map((node) => [node.id, node]));
 
@@ -650,6 +1196,8 @@ function buildFlowNodes(
 
   const knowledgeNodes: KnowledgeFlowNode[] = nodes.map((node) => {
     const previous = currentById.get(node.id);
+    const author = isBiblioAuthorNode(node);
+    const paper = isBiblioDocumentNode(node);
     return {
       ...(previous?.type === "knowledge" ? previous : {}),
       id: node.id,
@@ -659,9 +1207,15 @@ function buildFlowNodes(
           ? previous.position
           : { x: node.x, y: node.y },
       selected: selectedNodeIds.includes(node.id),
+      style: author
+        ? { width: BIBLIO_AUTHOR_WIDTH, height: BIBLIO_AUTHOR_HEIGHT }
+        : paper
+          ? { width: BIBLIO_DOC_WIDTH, height: BIBLIO_DOC_HEIGHT }
+          : previous?.style,
       data: {
         node,
         assets: assets.filter((asset) => node.assetIds?.includes(asset.id)),
+        degree: degrees.get(node.id),
         onAssetDrop,
       },
     };
@@ -670,20 +1224,86 @@ function buildFlowNodes(
   return [...noteNodes, ...knowledgeNodes];
 }
 
+function extraBiblioKnowledgeRelations(
+  allNodes: KnowledgeNode[],
+  relations: Relation[],
+) {
+  const knowledge = allNodes.filter((node) => !isBiblioGraphNode(node));
+  const papers = allNodes.filter((node) => isBiblioDocumentNode(node));
+  const seen = new Set(
+    relations.map(
+      (relation) => `${relation.source}|${relation.target}|${relation.type}`,
+    ),
+  );
+  const extra: Relation[] = [];
+  for (const paper of papers) {
+    for (const targetId of matchingKnowledgeIds(paper, knowledge)) {
+      const key = `${paper.id}|${targetId}|述`;
+      if (seen.has(key)) continue;
+      extra.push({
+        id: `relation-${crypto.randomUUID()}`,
+        source: paper.id,
+        target: targetId,
+        type: "述",
+        evidence: paper.title,
+      });
+      seen.add(key);
+    }
+  }
+  return extra;
+}
+
 const ReactFlowCanvas = dynamic(
   () => import("@xyflow/react").then((module) => module.ReactFlow),
   { ssr: false },
 );
-const ModelPreview = dynamic(
-  () => import("./model-preview").then((module) => module.ModelPreview),
-  { ssr: false },
-);
-const DocumentMediaPreview = dynamic(
-  () =>
-    import("./document-media-preview").then(
-      (module) => module.DocumentMediaPreview,
+
+const StudioMapCanvas = dynamic(
+  () => import("./studio-map").then((module) => module.StudioMapView),
+  {
+    ssr: false,
+    loading: () => (
+      <div className="studio-map-view">
+        <div className="graph-intro">
+          <div>
+            <span>INS MAP</span>
+            <h1>地图</h1>
+          </div>
+        </div>
+        <div className="studio-map-canvas">
+          <div className="studio-map-empty">
+            <span>LOADING MAP</span>
+            <h2>正在载入地图</h2>
+            <p>MapLibre 底图与 deck.gl 图层会在客户端加载。</p>
+          </div>
+        </div>
+      </div>
     ),
-  { ssr: false },
+  },
+);
+
+const StudioBiblioCanvas = dynamic(
+  () => import("./bibliometrics-trial").then((module) => module.BibliometricsTrial),
+  {
+    ssr: false,
+    loading: () => (
+      <div className="studio-map-view">
+        <div className="graph-intro">
+          <div>
+            <span>BIBLIOMETRICS</span>
+            <h1>计量</h1>
+          </div>
+        </div>
+        <div className="studio-map-canvas">
+          <div className="studio-map-empty">
+            <span>LOADING BIBLIOMETRICS</span>
+            <h2>正在载入计量工作台</h2>
+            <p>检索窗、题录表和本机网络图会在客户端加载，数据仍留在本机。</p>
+          </div>
+        </div>
+      </div>
+    ),
+  },
 );
 
 function ExplorerView({
@@ -817,10 +1437,16 @@ export default function Home() {
   const [topicDescription, setTopicDescription] = useState("");
   const [activeTopicId, setActiveTopicId] = useState("");
   const [nodeKindFilter, setNodeKindFilter] = useState<NodeKind | "all">("all");
+  const [hiddenNodeKinds, setHiddenNodeKinds] = useState<Set<NodeKind>>(
+    () => new Set(),
+  );
   const [nodeSort, setNodeSort] = useState<"manual" | "title" | "kind">("manual");
   const [assetFolderFilter, setAssetFolderFilter] = useState("all");
   const [assetKindFilter, setAssetKindFilter] = useState<AssetItem["kind"] | "all">("all");
   const [assetLayout, setAssetLayout] = useState<"grid" | "list">("grid");
+  const [assetPreviewWidth, setAssetPreviewWidth] = useState(
+    ASSET_PREVIEW_DEFAULT_WIDTH,
+  );
   const [basicInfoOpen, setBasicInfoOpen] = useState(true);
   const [versionsOpen, setVersionsOpen] = useState(false);
   const [versions, setVersions] = useState<WorkspaceVersion[]>([]);
@@ -829,19 +1455,36 @@ export default function Home() {
     useState<AssetContextMenuState | null>(null);
   const [assetClipboardId, setAssetClipboardId] = useState<string | null>(null);
   const [connectionPicker, setConnectionPicker] = useState<GraphConnectionPickerState | null>(null);
+  const [editingRelationId, setEditingRelationId] = useState<string | null>(null);
+  const [relationDraft, setRelationDraft] = useState("");
   const [historyVersion, setHistoryVersion] = useState(0);
   const [historyAvailability, setHistoryAvailability] = useState({
     undo: false,
     redo: false,
   });
   const [hydrated, setHydrated] = useState(false);
+  const [workspaceDirectorySupported, setWorkspaceDirectorySupported] =
+    useState(false);
+  const [workspaceDirectoryConnected, setWorkspaceDirectoryConnected] =
+    useState(false);
   const noticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const directoryInput = useRef<HTMLInputElement>(null);
+  const assetBrowserRef = useRef<HTMLDivElement>(null);
+  const assetPreviewWidthRef = useRef(ASSET_PREVIEW_DEFAULT_WIDTH);
+  const assetResizeFrame = useRef<number | null>(null);
+  const assetResizeState = useRef<{
+    pointerId: number;
+    min: number;
+    max: number;
+  } | null>(null);
   const flowInstance = useRef<ReactFlowInstance<StudioFlowNode, FlowEdge> | null>(null);
   const historyPast = useRef<GraphHistoryEntry[]>([]);
   const historyFuture = useRef<GraphHistoryEntry[]>([]);
   const nodeDragActive = useRef(false);
   const hydratedAssetIds = useRef(new Set<string>());
+  const assetsRef = useRef<AssetItem[]>([]);
+  const activeWorkspaceIdRef = useRef(activeWorkspaceId);
+  const graphClipboard = useRef<GraphClipboard | null>(null);
 
   const refreshHistoryAvailability = () => {
     setHistoryAvailability({
@@ -859,6 +1502,8 @@ export default function Home() {
   const scenes = activeWorkspace?.scenes.length ? activeWorkspace.scenes : [blankScene];
   const topics = activeWorkspace?.topics ?? [];
   const graphAnnotations = activeWorkspace?.graphAnnotations ?? [];
+  const deliveryPackages = activeWorkspace?.deliveryPackages ?? [];
+  const biblioCorpus = activeWorkspace?.biblioCorpus ?? emptyBiblioCorpus();
 
   const updateActiveWorkspace = (
     updater: (workspace: WorkspaceRecord) => WorkspaceRecord,
@@ -901,12 +1546,16 @@ export default function Home() {
   const typeCounts = useMemo(
     () =>
       nodes.reduce(
-        (counts, node) => ({ ...counts, [node.kind]: counts[node.kind] + 1 }),
+        (counts, node) => ({
+          ...counts,
+          [node.kind]: (counts[node.kind] ?? 0) + 1,
+        }),
         {
           Space: 0,
           Person: 0,
           Event: 0,
           Document: 0,
+          Author: 0,
           Artifact: 0,
           Media: 0,
           Concept: 0,
@@ -915,7 +1564,7 @@ export default function Home() {
     [nodes],
   );
 
-  const visibleNodes = useMemo(() => {
+  const listedNodes = useMemo(() => {
     const keyword = search.trim().toLowerCase();
     const filtered = nodes.filter(
       (node) =>
@@ -931,11 +1580,30 @@ export default function Home() {
     }
     if (nodeSort === "kind") {
       return [...filtered].sort((a, b) =>
-        kindMeta[a.kind].label.localeCompare(kindMeta[b.kind].label, "zh-CN"),
+        kindMeta[a.kind]?.label.localeCompare(kindMeta[b.kind]?.label ?? "", "zh-CN"),
       );
     }
     return filtered;
   }, [nodeKindFilter, nodeSort, nodes, search]);
+
+  const biblioNodeCount = useMemo(
+    () => nodes.filter((node) => isBiblioGraphNode(node)).length,
+    [nodes],
+  );
+
+  const graphNodes = useMemo(
+    () => listedNodes.filter((node) => !hiddenNodeKinds.has(node.kind)),
+    [hiddenNodeKinds, listedNodes],
+  );
+
+  const biblioDegrees = useMemo(() => {
+    const map = new Map<string, number>();
+    for (const relation of relations) {
+      if (relation.type !== "著") continue;
+      map.set(relation.source, (map.get(relation.source) ?? 0) + 1);
+    }
+    return map;
+  }, [relations]);
 
   const filteredAssets = useMemo(() => {
     const keyword = search.trim().toLowerCase();
@@ -955,15 +1623,58 @@ export default function Home() {
   }, [assetFolderFilter, assetKindFilter, assets, search]);
 
   const visibleNodeIds = useMemo(
-    () => new Set(visibleNodes.map((node) => node.id)),
-    [visibleNodes],
+    () => new Set(graphNodes.map((node) => node.id)),
+    [graphNodes],
   );
+  const graphRelationCount = useMemo(
+    () =>
+      relations.filter(
+        (relation) =>
+          visibleNodeIds.has(relation.source) && visibleNodeIds.has(relation.target),
+      ).length,
+    [relations, visibleNodeIds],
+  );
+  const mapNodes = useMemo(
+    () =>
+      nodes.map((node) => ({
+        id: node.id,
+        kind: node.kind,
+        title: node.title,
+        subtitle: node.subtitle,
+        period: node.period,
+        color: kindMeta[node.kind].color,
+        geo: node.geo,
+        yearFrom: node.yearFrom,
+        yearTo: node.yearTo,
+      })),
+    [nodes],
+  );
+  const mapRelations = useMemo(
+    () =>
+      relations.map((relation) => ({
+        id: relation.id,
+        source: relation.source,
+        target: relation.target,
+        type: relation.type,
+      })),
+    [relations],
+  );
+  const selectMapNode = useCallback((nodeId: string) => {
+    setSelectedNodeId(nodeId);
+    setSelectedNodeIds([nodeId]);
+    setInspectorOpen(true);
+  }, []);
 
   const flash = (message: string) => {
     setNotice(message);
     if (noticeTimer.current) clearTimeout(noticeTimer.current);
     noticeTimer.current = setTimeout(() => setNotice("工作区已自动保存"), 2400);
   };
+
+  useEffect(() => {
+    assetsRef.current = assets;
+    activeWorkspaceIdRef.current = activeWorkspaceId;
+  }, [activeWorkspaceId, assets]);
 
   const createGraphSnapshot = (): GraphHistoryEntry => ({
     workspaceId: activeWorkspaceId,
@@ -978,6 +1689,7 @@ export default function Home() {
       ...annotation,
       nodeIds: [...annotation.nodeIds],
     })),
+    deliveryPackages: deliveryPackages.map((item) => ({ ...item })),
   });
 
   const commitGraphHistory = () => {
@@ -1002,6 +1714,9 @@ export default function Home() {
               graphAnnotations: snapshot.graphAnnotations.map((annotation) => ({
                 ...annotation,
                 nodeIds: [...annotation.nodeIds],
+              })),
+              deliveryPackages: snapshot.deliveryPackages.map((item) => ({
+                ...item,
               })),
             }
           : workspace,
@@ -1070,8 +1785,11 @@ export default function Home() {
         path: "节点直接导入/",
         kind,
         size: formatBytes(file.size),
+        mimeType: file.type || undefined,
+        fileSize: file.size,
         references: 1,
         previewUrl: URL.createObjectURL(file),
+        localPath: nativeFilePath(file),
       };
     });
     await Promise.all(
@@ -1100,7 +1818,7 @@ export default function Home() {
 
   const [flowNodes, setFlowNodes] = useState<StudioFlowNode[]>(() =>
     buildFlowNodes(
-      visibleNodes,
+      graphNodes,
       graphAnnotations,
       assets,
       selectedNodeIds,
@@ -1112,38 +1830,116 @@ export default function Home() {
   useEffect(() => {
     setFlowNodes((current) => {
       const next = buildFlowNodes(
-        visibleNodes,
+        graphNodes,
         graphAnnotations,
         assets,
         selectedNodeIds,
         attachAssetToNode,
         current,
         nodeDragActive.current,
+        biblioDegrees,
       );
       flowNodesRef.current = next;
       return next;
     });
-  }, [assets, graphAnnotations, selectedNodeIds, visibleNodes]);
+  }, [assets, biblioDegrees, graphAnnotations, selectedNodeIds, graphNodes]);
 
-  const flowEdges = useMemo<FlowEdge[]>(
+  const cancelRelationEdit = useCallback(() => {
+    setEditingRelationId(null);
+    setRelationDraft("");
+  }, []);
+
+  const beginRelationEdit = useCallback(
+    (relationId: string) => {
+      const relation = relations.find((item) => item.id === relationId);
+      if (!relation) return;
+      setEditingRelationId(relation.id);
+      setRelationDraft(relation.type);
+      setGraphContextMenu(null);
+      setConnectionPicker(null);
+    },
+    [relations],
+  );
+
+  const commitRelationLabel = useCallback(
+    (relationId: string, value: string) => {
+      const relation = relations.find((item) => item.id === relationId);
+      if (!relation) {
+        cancelRelationEdit();
+        return;
+      }
+      const nextLabel = value.trim() || relation.type;
+      if (nextLabel !== relation.type) {
+        commitGraphHistory();
+        updateActiveWorkspace((workspace) => ({
+          ...workspace,
+          relations: workspace.relations.map((item) =>
+            item.id === relationId ? { ...item, type: nextLabel } : item,
+          ),
+        }));
+        flash(`关系已修改为「${nextLabel}」`);
+      }
+      cancelRelationEdit();
+    },
+    [cancelRelationEdit, relations],
+  );
+
+  const flowEdges = useMemo<EditableRelationFlowEdge[]>(
     () =>
       relations
         .filter(
           (relation) =>
             visibleNodeIds.has(relation.source) && visibleNodeIds.has(relation.target),
         )
-        .map((relation) => ({
-          id: relation.id,
-          source: relation.source,
-          target: relation.target,
-          label: relation.type,
-          className: "knowledge-edge",
-          labelStyle: { fill: "#57544d", fontSize: 8, fontWeight: 700 },
-          labelBgStyle: { fill: "#f7f5ef", fillOpacity: 0.92 },
-          labelBgPadding: [4, 2],
-          style: { stroke: "#87847b", strokeWidth: 1.2 },
-        })),
-    [relations, visibleNodeIds],
+        .map((relation) => {
+          const biblioEdge = relation.type === "著" || relation.type === "述";
+          const emphasis =
+            biblioEdge &&
+            (selectedNodeIds.includes(relation.source) ||
+              selectedNodeIds.includes(relation.target));
+          return {
+            id: relation.id,
+            source: relation.source,
+            target: relation.target,
+            type: "editableRelation" as const,
+            className: biblioEdge ? "knowledge-edge biblio-edge" : "knowledge-edge",
+            ariaLabel: `关系：${relation.type}，点击可修改`,
+            data: {
+              label: relation.type,
+              draft:
+                editingRelationId === relation.id
+                  ? relationDraft
+                  : relation.type,
+              editing: editingRelationId === relation.id,
+              quiet: biblioEdge,
+              emphasis,
+              onBeginEdit: beginRelationEdit,
+              onDraftChange: setRelationDraft,
+              onCommit: commitRelationLabel,
+              onCancel: cancelRelationEdit,
+            },
+            style: biblioEdge
+              ? {
+                  stroke: emphasis
+                    ? relation.type === "述"
+                      ? "#315c4b"
+                      : "#6b5344"
+                    : "rgba(107, 83, 68, 0.14)",
+                  strokeWidth: emphasis ? 1.6 : 0.7,
+                }
+              : { stroke: "#87847b", strokeWidth: 1.2 },
+          };
+        }),
+    [
+      beginRelationEdit,
+      cancelRelationEdit,
+      commitRelationLabel,
+      editingRelationId,
+      relationDraft,
+      relations,
+      selectedNodeIds,
+      visibleNodeIds,
+    ],
   );
 
   const saveWorkspaceVersion = () => {
@@ -1164,6 +1960,18 @@ export default function Home() {
         ...annotation,
         nodeIds: [...annotation.nodeIds],
       })),
+      deliveryPackages: activeWorkspace.deliveryPackages.map((item) => ({
+        ...item,
+      })),
+      biblioCorpus: {
+        ...(activeWorkspace.biblioCorpus ?? emptyBiblioCorpus()),
+        records: (activeWorkspace.biblioCorpus?.records ?? []).map((record) => ({
+          ...record,
+          authors: [...record.authors],
+          keywords: [...record.keywords],
+          referencedWorks: [...record.referencedWorks],
+        })),
+      },
     };
     const version: WorkspaceVersion = {
       id: `version-${crypto.randomUUID()}`,
@@ -1184,6 +1992,10 @@ export default function Home() {
           ? {
               ...version.snapshot,
               assets: version.snapshot.assets.map((asset) => ({ ...asset })),
+              deliveryPackages: (
+                version.snapshot.deliveryPackages ?? []
+              ).map((item) => ({ ...item })),
+              biblioCorpus: version.snapshot.biblioCorpus ?? emptyBiblioCorpus(),
             }
           : workspace,
       ),
@@ -1205,10 +2017,59 @@ export default function Home() {
 
   const downloadSelectedAsset = () => downloadAsset(selectedAsset);
 
+  const revealAsset = async (assetId: string) => {
+    const asset = assets.find((item) => item.id === assetId);
+    if (!asset) return;
+    let result = await revealLocalAsset(activeWorkspaceId, asset);
+    if (!result.ok && result.reason === "unavailable") {
+      try {
+        const connected = await connectWorkspaceDirectory(activeWorkspaceId);
+        if (!connected) return;
+        setWorkspaceDirectoryConnected(true);
+        result = await revealLocalAsset(activeWorkspaceId, asset);
+      } catch (error) {
+        if (error instanceof DOMException && error.name === "AbortError") {
+          return;
+        }
+        flash("无法打开本机文件位置");
+        return;
+      }
+    }
+    if (result.ok) {
+      flash(
+        result.via === "picker"
+          ? `已打开「${asset.name}」的本机位置`
+          : `已在资源管理器中打开「${asset.name}」`,
+      );
+      return;
+    }
+    if (result.reason === "unsupported") {
+      flash("当前浏览器不支持打开本机文件位置");
+      return;
+    }
+    if (result.reason === "missing") {
+      flash("未找到本机源文件，请确认文件仍在原位置或先连接工作区");
+      return;
+    }
+    flash("尚未记录本机路径。请选择本机文件夹后再试");
+  };
+
+  const revealNodeLocalFile = (nodeId: string) => {
+    const node = nodes.find((item) => item.id === nodeId);
+    const firstAssetId = node?.assetIds?.[0];
+    if (!firstAssetId) {
+      flash("该节点尚未关联数字资源");
+      return;
+    }
+    void revealAsset(firstAssetId);
+    setGraphContextMenu(null);
+  };
+
   const copyAsset = (assetId: string) => {
     const asset = assets.find((item) => item.id === assetId);
     if (!asset) return;
     setAssetClipboardId(assetId);
+    setAssetContextMenu(null);
     flash(`已复制资源「${asset.name}」`);
   };
 
@@ -1221,6 +2082,14 @@ export default function Home() {
       const blob = await readLocalAssetBlob(source.id);
       if (blob) {
         await storeLocalAssetBlob(id, blob);
+        await writeWorkspaceAssetFile(
+          activeWorkspaceId,
+          {
+            name: duplicateAssetName(source.name),
+            path: source.path,
+          },
+          blob,
+        ).catch(() => false);
         previewUrl = URL.createObjectURL(blob);
       }
     } catch {
@@ -1232,25 +2101,176 @@ export default function Home() {
       name: duplicateAssetName(source.name),
       references: 0,
       previewUrl,
+      localPath: undefined,
     };
+    try {
+      const workspacePath = await workspaceAssetLocalPath(
+        activeWorkspaceId,
+        duplicated,
+      );
+      if (workspacePath) duplicated.localPath = workspacePath;
+    } catch {
+      // Keep metadata-only duplicates without a local path.
+    }
     commitGraphHistory();
     setAssets((current) => [duplicated, ...current]);
     setSelectedAssetId(id);
     flash(`已创建「${duplicated.name}」`);
   };
 
-  const renameAsset = (assetId: string) => {
+  const renameAsset = async (assetId: string) => {
     const asset = assets.find((item) => item.id === assetId);
     if (!asset) return;
-    const nextName = window.prompt("重命名资源", asset.name)?.trim();
+    const extensionIndex = asset.name.lastIndexOf(".");
+    const extension =
+      extensionIndex > 0 ? asset.name.slice(extensionIndex) : "";
+    const currentBaseName = extension
+      ? asset.name.slice(0, extensionIndex)
+      : asset.name;
+    const enteredName = window
+      .prompt(
+        extension
+          ? `重命名资源（扩展名保持 ${extension}）`
+          : "重命名资源",
+        currentBaseName,
+      )
+      ?.trim();
+    const normalizedBaseName =
+      extension &&
+      enteredName?.toLowerCase().endsWith(extension.toLowerCase())
+        ? enteredName.slice(0, -extension.length)
+        : enteredName;
+    const nextName = normalizedBaseName
+      ? `${normalizedBaseName}${extension}`
+      : "";
     if (!nextName || nextName === asset.name) return;
+    if (/[<>:"/\\|?*\u0000-\u001f]/.test(nextName)) {
+      flash("资源名称不能包含系统保留字符");
+      return;
+    }
+    if (
+      assets.some(
+        (item) =>
+          item.id !== assetId &&
+          item.path === asset.path &&
+          item.name.toLowerCase() === nextName.toLowerCase(),
+      )
+    ) {
+      flash("当前目录已经存在同名资源");
+      return;
+    }
+    const physicalRename = await renameWorkspaceAssetFile(
+      activeWorkspaceId,
+      asset,
+      nextName,
+    ).catch(() => "unavailable" as const);
+    if (physicalRename === "conflict") {
+      flash("本机工作区当前目录已经存在同名文件");
+      return;
+    }
+    if (
+      physicalRename === "missing" &&
+      workspaceDirectoryConnected
+    ) {
+      flash("本机工作区中未找到该资源源文件，未执行重命名");
+      return;
+    }
     commitGraphHistory();
     setAssets((current) =>
       current.map((item) =>
-        item.id === assetId ? { ...item, name: nextName } : item,
+        item.id === assetId
+          ? {
+              ...item,
+              name: nextName,
+              localPath: item.localPath
+                ? replacePathFileName(item.localPath, nextName)
+                : item.localPath,
+            }
+          : item,
       ),
     );
-    flash(`已重命名为「${nextName}」`);
+    flash(
+      physicalRename === "renamed"
+        ? `已重命名源文件为「${nextName}」`
+        : `已重命名本地资源为「${nextName}」`,
+    );
+  };
+
+  const createDeliveryPackage = async (assetId: string) => {
+    const source = assets.find((item) => item.id === assetId);
+    if (!source) return;
+    if (source.kind !== "model") {
+      flash("目前仅模型资源可以创建交付包");
+      return;
+    }
+    const packageName = window
+      .prompt("创建交付包：请输入英文名称", "")
+      ?.trim();
+    if (!packageName) return;
+    if (!/^[A-Za-z][A-Za-z0-9_]*$/.test(packageName)) {
+      flash("交付包名称必须以英文字母开头，且只能包含英文、数字和下划线");
+      return;
+    }
+    if (
+      deliveryPackages.some(
+        (item) => item.name.toLowerCase() === packageName.toLowerCase(),
+      )
+    ) {
+      flash(`交付包「${packageName}」已经存在`);
+      return;
+    }
+    const blob = await readLocalAssetBlob(source.id);
+    if (!blob) {
+      flash("该模型没有可复制的本地源文件");
+      return;
+    }
+    const extensionIndex = source.name.lastIndexOf(".");
+    const extension =
+      extensionIndex >= 0 ? source.name.slice(extensionIndex) : "";
+    const sourceCopyName = `${packageName}${extension}`;
+    const sourceCopyId = `asset-delivery-${crypto.randomUUID()}`;
+    const packageId = `delivery-${crypto.randomUUID()}`;
+    const packagePath = `Deliveries/${packageName}/`;
+    const sourceCopy: AssetItem = {
+      ...source,
+      id: sourceCopyId,
+      name: sourceCopyName,
+      path: `${packagePath}Source/`,
+      references: 0,
+      sourceAssetId: source.id,
+      previewUrl: URL.createObjectURL(blob),
+    };
+    await storeLocalAssetBlob(sourceCopyId, blob);
+    const physicalDirectory = await createWorkspaceDeliveryDirectories(
+      activeWorkspaceId,
+      packageName,
+      source,
+      sourceCopyName,
+      blob,
+    ).catch(() => false);
+    commitGraphHistory();
+    updateActiveWorkspace((workspace) => ({
+      ...workspace,
+      assets: [sourceCopy, ...workspace.assets],
+      deliveryPackages: [
+        {
+          id: packageId,
+          name: packageName,
+          sourceAssetId: source.id,
+          sourceCopyAssetId: sourceCopyId,
+          path: packagePath,
+          createdAt: new Date().toISOString(),
+          physicalDirectory,
+        },
+        ...workspace.deliveryPackages,
+      ],
+    }));
+    setSelectedAssetId(sourceCopyId);
+    flash(
+      physicalDirectory
+        ? `已创建交付包「${packageName}」及本机目录`
+        : `已创建交付包「${packageName}」`,
+    );
   };
 
   const deleteAsset = (assetId: string) => {
@@ -1270,6 +2290,36 @@ export default function Home() {
     flash(`已删除资源「${asset.name}」`);
   };
 
+  const createCorrectedOcrText = async (
+    source: AssetItem,
+    document: import("./ocr/ocr-types").OcrDocumentResult,
+  ) => {
+    const text = document.pages.map((page) => page.correctedText ?? page.rawText).join("\n\n");
+    if (!text.trim()) return;
+    const id = `ocr-text-${crypto.randomUUID()}`;
+    const name = `${source.name.replace(/\.[^.]+$/, "")}-校勘文本.md`;
+    const blob = new Blob([`# ${source.name}\n\n${text}`], { type: "text/markdown;charset=utf-8" });
+    await storeLocalAssetBlob(id, blob);
+    const asset: AssetItem = {
+      id,
+      name,
+      path: `${source.path}OCR/`,
+      kind: "text",
+      size: formatBytes(blob.size),
+      fileSize: blob.size,
+      mimeType: blob.type,
+      references: 0,
+      sourceAssetId: source.id,
+      previewUrl: URL.createObjectURL(blob),
+      description: `由「${source.name}」OCR 识别后人工校勘生成。`,
+    };
+    await writeWorkspaceAssetFile(activeWorkspaceId, asset, blob).catch(() => false);
+    asset.localPath = await workspaceAssetLocalPath(activeWorkspaceId, asset);
+    setAssets((current) => [asset, ...current]);
+    setSelectedAssetId(id);
+    flash("已创建校勘文本资源；其来源关系已保留");
+  };
+
   useEffect(() => {
     const preventBrowserContextMenu = (event: MouseEvent) => {
       event.preventDefault();
@@ -1280,16 +2330,11 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
-    if (section !== "assets") return;
     const onAssetKeyDown = (event: KeyboardEvent) => {
-      const target = event.target;
-      if (
-        target instanceof HTMLElement &&
-        (target.isContentEditable ||
-          ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName))
-      ) {
-        return;
-      }
+      if (explorer || dialog) return;
+      if (section === "graph" || section === "boards" || section === "map" || section === "biblio") return;
+      if (section === "nodes") return;
+      if (isTypingTarget(event.target)) return;
       const ctrl = event.ctrlKey || event.metaKey;
       const key = event.key.toLowerCase();
       if (ctrl && key === "c" && selectedAsset) {
@@ -1312,7 +2357,7 @@ export default function Home() {
         redoGraph();
       } else if (key === "f2" && selectedAsset) {
         event.preventDefault();
-        renameAsset(selectedAsset.id);
+        void renameAsset(selectedAsset.id);
       } else if (
         (event.key === "Delete" || event.key === "Backspace") &&
         selectedAsset
@@ -1323,11 +2368,26 @@ export default function Home() {
     };
     window.addEventListener("keydown", onAssetKeyDown);
     return () => window.removeEventListener("keydown", onAssetKeyDown);
-  }, [assetClipboardId, section, selectedAsset]);
+  }, [
+    assetClipboardId,
+    dialog,
+    explorer,
+    section,
+    selectedAsset,
+    selectedNode,
+    selectedNodeIds,
+  ]);
 
   useEffect(() => {
     if (window.innerWidth <= 900) setInspectorOpen(false);
   }, []);
+
+  useEffect(() => {
+    setWorkspaceDirectorySupported(supportsWorkspaceDirectoryAccess());
+    void workspaceDirectoryIsConnected(activeWorkspaceId)
+      .then(setWorkspaceDirectoryConnected)
+      .catch(() => setWorkspaceDirectoryConnected(false));
+  }, [activeWorkspaceId]);
 
   useEffect(() => {
     try {
@@ -1340,16 +2400,58 @@ export default function Home() {
             const sampleNodeAssets = new Map(
               initialNodes.map((node) => [node.id, node.assetIds ?? []]),
             );
+            const knownNodeIds = new Set(workspace.nodes.map((node) => node.id));
+            const knownRelationIds = new Set(
+              workspace.relations.map((relation) => relation.id),
+            );
             const knownAssetIds = new Set(workspace.assets.map((asset) => asset.id));
-            return {
-              ...workspace,
-              graphAnnotations: workspace.graphAnnotations ?? [],
-              nodes: workspace.nodes.map((node) => ({
+            const mergedNodes = workspace.nodes.map((node) => {
+              const sample = initialNodes.find((item) => item.id === node.id);
+              const years = SAMPLE_NODE_YEARS[node.id];
+              const geo =
+                sample?.geo || node.geo
+                  ? {
+                      ...(sample?.geo ?? {}),
+                      ...(node.geo ?? {}),
+                      polygon:
+                        workspace.id === "workspace-ruins" && sample?.geo?.polygon
+                          ? sample.geo.polygon
+                          : (node.geo?.polygon ?? sample?.geo?.polygon),
+                    }
+                  : node.geo;
+              return migrateBiblioAuthorNode({
                 ...node,
                 assetIds: [
                   ...(node.assetIds ?? sampleNodeAssets.get(node.id) ?? []),
                 ],
-              })),
+                geo,
+                yearFrom: node.yearFrom ?? sample?.yearFrom ?? years?.yearFrom,
+                yearTo: node.yearTo ?? sample?.yearTo ?? years?.yearTo,
+              });
+            });
+            return {
+              ...workspace,
+              graphAnnotations: workspace.graphAnnotations ?? [],
+              deliveryPackages: workspace.deliveryPackages ?? [],
+              biblioCorpus: workspace.biblioCorpus ?? emptyBiblioCorpus(),
+              nodes:
+                workspace.id === "workspace-ruins"
+                  ? [
+                      ...mergedNodes,
+                      ...initialNodes
+                        .filter((node) => !knownNodeIds.has(node.id))
+                        .map((node) => stampSampleNode(node)),
+                    ]
+                  : mergedNodes,
+              relations:
+                workspace.id === "workspace-ruins"
+                  ? [
+                      ...workspace.relations,
+                      ...initialRelations.filter(
+                        (relation) => !knownRelationIds.has(relation.id),
+                      ),
+                    ]
+                  : workspace.relations,
               assets:
                 workspace.id === "workspace-ruins"
                   ? [
@@ -1388,6 +2490,30 @@ export default function Home() {
       // A broken version index must not prevent the workspace from opening.
     }
   }, []);
+
+  useEffect(() => {
+    const storedValue = window.localStorage.getItem(
+      "inscription-asset-preview-width-v1",
+    );
+    if (!storedValue) return;
+    const storedWidth = Number(storedValue);
+    if (!Number.isFinite(storedWidth)) return;
+    const nextWidth = Math.max(
+      ASSET_PREVIEW_MIN_WIDTH,
+      Math.min(900, storedWidth),
+    );
+    assetPreviewWidthRef.current = nextWidth;
+    setAssetPreviewWidth(nextWidth);
+  }, []);
+
+  useEffect(
+    () => () => {
+      if (assetResizeFrame.current !== null) {
+        window.cancelAnimationFrame(assetResizeFrame.current);
+      }
+    },
+    [],
+  );
 
   useEffect(() => {
     if (!hydrated) return;
@@ -1447,6 +2573,7 @@ export default function Home() {
     setSelectedAssetId(activeWorkspace?.assets[0]?.id ?? "");
     setGraphContextMenu(null);
     setAssetContextMenu(null);
+    cancelRelationEdit();
     historyPast.current = [];
     historyFuture.current = [];
     refreshHistoryAvailability();
@@ -1460,6 +2587,7 @@ export default function Home() {
         setWorkspaceMenuOpen(false);
         setGraphContextMenu(null);
         setAssetContextMenu(null);
+        cancelRelationEdit();
       }
       if (event.altKey) {
         const target = sectionMeta.find(
@@ -1470,7 +2598,71 @@ export default function Home() {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [explorer]);
+  }, [cancelRelationEdit, explorer]);
+
+  const connectCurrentWorkspaceDirectory = async () => {
+    if (!supportsWorkspaceDirectoryAccess()) {
+      flash("当前浏览器不支持直接连接本机工作区");
+      return;
+    }
+    try {
+      const connected = await connectWorkspaceDirectory(activeWorkspaceId);
+      if (!connected) return;
+      setWorkspaceDirectoryConnected(true);
+      let copied = 0;
+      for (const asset of assets) {
+        const blob = await readLocalAssetBlob(asset.id);
+        if (!blob) continue;
+        if (
+          await writeWorkspaceAssetFile(
+            activeWorkspaceId,
+            asset,
+            blob,
+          ).catch(() => false)
+        ) {
+          copied += 1;
+        }
+      }
+      const materializedPackageIds: string[] = [];
+      for (const deliveryPackage of deliveryPackages) {
+        const source = assets.find(
+          (asset) => asset.id === deliveryPackage.sourceAssetId,
+        );
+        const sourceCopy = assets.find(
+          (asset) => asset.id === deliveryPackage.sourceCopyAssetId,
+        );
+        if (!source || !sourceCopy) continue;
+        const blob = await readLocalAssetBlob(sourceCopy.id);
+        if (!blob) continue;
+        if (
+          await createWorkspaceDeliveryDirectories(
+            activeWorkspaceId,
+            deliveryPackage.name,
+            source,
+            sourceCopy.name,
+            blob,
+          ).catch(() => false)
+        ) {
+          materializedPackageIds.push(deliveryPackage.id);
+        }
+      }
+      if (materializedPackageIds.length > 0) {
+        const packageIds = new Set(materializedPackageIds);
+        updateActiveWorkspace((workspace) => ({
+          ...workspace,
+          deliveryPackages: workspace.deliveryPackages.map((item) =>
+            packageIds.has(item.id)
+              ? { ...item, physicalDirectory: true }
+              : item,
+          ),
+        }));
+      }
+      flash(`本机工作区已连接，已同步 ${copied} 个资源源文件`);
+    } catch (error) {
+      if (error instanceof DOMException && error.name === "AbortError") return;
+      flash("连接本机工作区失败");
+    }
+  };
 
   const addImportedFiles = async (
     files: Array<{ file: File; path: string }>,
@@ -1484,19 +2676,143 @@ export default function Home() {
         path: path.includes("/") ? `${path.slice(0, path.lastIndexOf("/"))}/` : "新导入/",
         kind,
         size: formatBytes(file.size),
+        mimeType: file.type || undefined,
+        fileSize: file.size,
         references: 0,
         previewUrl: URL.createObjectURL(file),
+        localPath: nativeFilePath(file),
       };
     });
     await Promise.all(
-      additions.map((asset, index) =>
-        storeLocalAssetBlob(asset.id, files[index].file),
-      ),
+      additions.map(async (asset, index) => {
+        await storeLocalAssetBlob(asset.id, files[index].file);
+        const written = await writeWorkspaceAssetFile(
+          activeWorkspaceId,
+          asset,
+          files[index].file,
+        ).catch(() => false);
+        if (written) {
+          asset.localPath =
+            (await workspaceAssetLocalPath(activeWorkspaceId, asset)) ??
+            asset.localPath;
+        }
+      }),
     );
     setAssets((current) => [...additions, ...current]);
     setSelectedAssetId(additions[0].id);
     setSection("assets");
     flash(`已导入 ${files.length} 个资源`);
+  };
+
+  const saveTextAsset = useCallback(
+    async (assetId: string, text: string, reason: TextSaveReason) => {
+      const asset = assetsRef.current.find((item) => item.id === assetId);
+      if (!asset) return;
+      const blob = new Blob([text], {
+        type: mimeTypeForTextFile(asset.name),
+      });
+      await storeLocalAssetBlob(assetId, blob);
+      await writeWorkspaceAssetFile(
+        activeWorkspaceIdRef.current,
+        asset,
+        blob,
+      ).catch(() => false);
+      if (asset.previewUrl?.startsWith("blob:")) {
+        URL.revokeObjectURL(asset.previewUrl);
+      }
+      const previewUrl = URL.createObjectURL(blob);
+      const workspaceId = activeWorkspaceIdRef.current;
+      setWorkspaces((current) =>
+        current.map((workspace) =>
+          workspace.id === workspaceId
+            ? {
+                ...workspace,
+                assets: workspace.assets.map((item) =>
+                  item.id === assetId
+                    ? {
+                        ...item,
+                        size: formatBytes(blob.size),
+                        fileSize: blob.size,
+                        mimeType: blob.type,
+                        previewUrl,
+                      }
+                    : item,
+                ),
+              }
+            : workspace,
+        ),
+      );
+      if (reason === "manual") {
+        flash(`已保存「${asset.name}」`);
+      }
+    },
+    [],
+  );
+
+  const createBlankTextAsset = async (kind: "md" | "json" | "txt") => {
+    const presets = {
+      md: {
+        title: "新建 Markdown 笔记",
+        defaultName: "研究笔记",
+        path: "研究笔记/",
+      },
+      json: {
+        title: "新建 JSON 数据",
+        defaultName: "数据记录",
+        path: "结构化数据/",
+      },
+      txt: {
+        title: "新建文本",
+        defaultName: "文本",
+        path: "文本/",
+      },
+    } as const;
+    const preset = presets[kind];
+    const entered = window.prompt(preset.title, preset.defaultName)?.trim();
+    if (!entered) return;
+    if (/[<>:"/\\|?*\u0000-\u001f]/.test(entered)) {
+      flash("资源名称不能包含系统保留字符");
+      return;
+    }
+    const baseName = entered.replace(/\.(md|json|txt)$/i, "");
+    const name = uniqueAssetFileName(
+      assetsRef.current,
+      preset.path,
+      baseName,
+      `.${kind}`,
+    );
+    const text =
+      kind === "md"
+        ? markdownNoteTemplate(baseName)
+        : kind === "json"
+          ? jsonDataTemplate(baseName)
+          : `${baseName}\n`;
+    const id = `text-${crypto.randomUUID()}`;
+    const blob = new Blob([text], { type: mimeTypeForTextFile(name) });
+    await storeLocalAssetBlob(id, blob);
+    const asset: AssetItem = {
+      id,
+      name,
+      path: preset.path,
+      kind: "text",
+      size: formatBytes(blob.size),
+      fileSize: blob.size,
+      mimeType: blob.type,
+      references: 0,
+      previewUrl: URL.createObjectURL(blob),
+    };
+    await writeWorkspaceAssetFile(
+      activeWorkspaceIdRef.current,
+      asset,
+      blob,
+    ).catch(() => false);
+    asset.localPath =
+      (await workspaceAssetLocalPath(activeWorkspaceIdRef.current, asset)) ??
+      asset.localPath;
+    setAssets((current) => [asset, ...current]);
+    setSelectedAssetId(id);
+    setSection("assets");
+    flash(`已创建「${name}」`);
   };
 
   const handleDrop = async (event: DragEvent<HTMLDivElement>) => {
@@ -1537,6 +2853,91 @@ export default function Home() {
     event.target.value = "";
   };
 
+  const getAssetPreviewWidthBounds = useCallback(() => {
+    const browser = assetBrowserRef.current;
+    if (!browser) {
+      return {
+        min: ASSET_PREVIEW_MIN_WIDTH,
+        max: 900,
+      };
+    }
+    const treeWidth =
+      browser.querySelector<HTMLElement>(".asset-tree-panel")?.offsetWidth ?? 0;
+    return {
+      min: ASSET_PREVIEW_MIN_WIDTH,
+      max: Math.max(
+        ASSET_PREVIEW_MIN_WIDTH,
+        browser.clientWidth -
+          treeWidth -
+          ASSET_GALLERY_MIN_WIDTH -
+          ASSET_PANEL_DIVIDER_WIDTH,
+      ),
+    };
+  }, []);
+
+  const applyAssetPreviewWidth = useCallback(
+    (nextWidth: number, persist = false) => {
+      const { min, max } = getAssetPreviewWidthBounds();
+      const width = Math.round(Math.max(min, Math.min(max, nextWidth)));
+      assetPreviewWidthRef.current = width;
+      assetBrowserRef.current?.style.setProperty(
+        "--asset-preview-width",
+        `${width}px`,
+      );
+      if (persist) {
+        setAssetPreviewWidth(width);
+        window.localStorage.setItem(
+          "inscription-asset-preview-width-v1",
+          String(width),
+        );
+      }
+    },
+    [getAssetPreviewWidthBounds],
+  );
+
+  const finishAssetPanelResize = useCallback(
+    (event: ReactPointerEvent<HTMLDivElement>) => {
+      const resize = assetResizeState.current;
+      if (!resize || resize.pointerId !== event.pointerId) return;
+      if (event.currentTarget.hasPointerCapture(event.pointerId)) {
+        event.currentTarget.releasePointerCapture(event.pointerId);
+      }
+      if (assetResizeFrame.current !== null) {
+        window.cancelAnimationFrame(assetResizeFrame.current);
+        assetResizeFrame.current = null;
+      }
+      assetResizeState.current = null;
+      assetBrowserRef.current?.classList.remove("is-resizing");
+      applyAssetPreviewWidth(assetPreviewWidthRef.current, true);
+    },
+    [applyAssetPreviewWidth],
+  );
+
+  useEffect(() => {
+    if (section !== "assets") return;
+    let resizeFrame: number | null = window.requestAnimationFrame(() => {
+      applyAssetPreviewWidth(assetPreviewWidthRef.current, true);
+      resizeFrame = null;
+    });
+    const onWindowResize = () => {
+      if (resizeFrame !== null) window.cancelAnimationFrame(resizeFrame);
+      resizeFrame = window.requestAnimationFrame(() => {
+        applyAssetPreviewWidth(assetPreviewWidthRef.current, true);
+        resizeFrame = null;
+      });
+    };
+    window.addEventListener("resize", onWindowResize);
+    return () => {
+      window.removeEventListener("resize", onWindowResize);
+      if (resizeFrame !== null) window.cancelAnimationFrame(resizeFrame);
+    };
+  }, [
+    applyAssetPreviewWidth,
+    assetPreviewWidth,
+    section,
+    sidebarCollapsed,
+  ]);
+
   const createNode = () => {
     commitGraphHistory();
     const id = `node-${crypto.randomUUID()}`;
@@ -1560,10 +2961,253 @@ export default function Home() {
     flash("已创建 Concept Node");
   };
 
+  const createMapPlaces = (places: MapPlaceDraft[]) => {
+    if (places.length === 0) return;
+    commitGraphHistory();
+    const created: KnowledgeNode[] = places.map((place, index) => {
+      const polygon = hasMapPolygon(place.geo);
+      return {
+        id: `node-${crypto.randomUUID()}`,
+        kind: "Space",
+        title: place.title.trim() || (polygon ? "未命名范围" : "未命名地点"),
+        subtitle: polygon ? "地图范围" : "地图点",
+        period:
+          place.yearFrom != null || place.yearTo != null
+            ? `${place.yearFrom ?? "?"}–${place.yearTo ?? "?"}`
+            : "待考",
+        summary:
+          place.summary ??
+          (polygon ? "在地图上绘制或导入的范围。" : "在地图上标注或导入的地点。"),
+        tags: ["地图"],
+        assetCount: 0,
+        assetIds: [],
+        geo: place.geo,
+        yearFrom: place.yearFrom,
+        yearTo: place.yearTo,
+        x: 360 + ((nodes.length + index) % 4) * 90,
+        y: 140 + Math.floor((nodes.length + index) / 4) * 80,
+      };
+    });
+    setNodes((current) => [...current, ...created]);
+    const last = created[created.length - 1];
+    setSelectedNodeId(last.id);
+    setSelectedNodeIds([last.id]);
+    setInspectorOpen(true);
+    flash(
+      created.length === 1
+        ? `已在地图创建「${created[0].title}」`
+        : `已在地图创建 ${created.length} 个空间节点`,
+    );
+  };
+
+  const setBiblioCorpus = (next: BiblioCorpus) => {
+    updateActiveWorkspace((workspace) => ({
+      ...workspace,
+      biblioCorpus: next,
+    }));
+  };
+
+  const writeBiblioRecords = (records: BiblioRecord[]) => {
+    if (records.length === 0) {
+      flash("没有可写入的题录。");
+      return;
+    }
+    commitGraphHistory();
+    const existingSources = new Set(
+      nodes
+        .filter((node) => node.kind === "Document" && node.source)
+        .map((node) => node.source!.toLowerCase()),
+    );
+    const authorIds = new Map(
+      nodes
+        .filter((node) => isBiblioAuthorNode(node))
+        .map((node) => [node.title.trim().toLowerCase(), node.id]),
+    );
+
+    const recordSource = (record: BiblioRecord) => {
+      if (record.doi) return `https://doi.org/${normalizeDoi(record.doi)}`;
+      return record.url || record.id;
+    };
+
+    const createdNodes: KnowledgeNode[] = [];
+    const createdRelations: Relation[] = [];
+    let documentCount = 0;
+    let authorCount = 0;
+    let skipped = 0;
+    let lastDocumentId = "";
+
+    for (const record of records) {
+      const source = recordSource(record);
+      if (existingSources.has(source.toLowerCase())) {
+        skipped += 1;
+        continue;
+      }
+      const documentId = `node-${crypto.randomUUID()}`;
+      const year = record.year ? String(record.year) : "待考";
+      createdNodes.push({
+        id: documentId,
+        kind: "Document",
+        title: record.title.trim() || "未命名文献",
+        subtitle: record.venue || biblioTypeLabel(record.type) || "计量题录",
+        period: year,
+        summary: biblioNodeSummary(record),
+        tags: [BIBLIO_GRAPH_TAG],
+        source,
+        assetCount: 0,
+        assetIds: [],
+        yearFrom: record.year,
+        yearTo: record.year,
+        x: 0,
+        y: 0,
+      });
+      existingSources.add(source.toLowerCase());
+      documentCount += 1;
+      lastDocumentId = documentId;
+
+      for (const author of record.authors) {
+        const name = author.trim();
+        if (!name) continue;
+        const key = name.toLowerCase();
+        let authorId = authorIds.get(key);
+        if (!authorId) {
+          authorId = `node-${crypto.randomUUID()}`;
+          createdNodes.push({
+            id: authorId,
+            kind: "Author",
+            title: name,
+            subtitle: "文献作者",
+            period: year,
+            summary: "计量题录作者",
+            tags: [BIBLIO_GRAPH_TAG],
+            assetCount: 0,
+            assetIds: [],
+            x: 0,
+            y: 0,
+          });
+          authorIds.set(key, authorId);
+          authorCount += 1;
+        }
+        createdRelations.push({
+          id: `relation-${crypto.randomUUID()}`,
+          source: authorId,
+          target: documentId,
+          type: "著",
+          evidence: record.doi || record.title,
+        });
+      }
+    }
+
+    if (createdNodes.length > 0) {
+      updateActiveWorkspace((workspace) => {
+        const extraOccupied = workspace.graphAnnotations.map((annotation) => ({
+          x: annotation.x,
+          y: annotation.y,
+          width: annotation.width,
+          height: annotation.height,
+        }));
+        const nextRelations = [...workspace.relations, ...createdRelations];
+        const nextNodes = applyBiblioArrange(
+          [...workspace.nodes, ...createdNodes],
+          extraOccupied,
+          nextRelations,
+        );
+        return {
+          ...workspace,
+          nodes: nextNodes,
+          relations: [
+            ...nextRelations,
+            ...extraBiblioKnowledgeRelations(nextNodes, nextRelations),
+          ],
+        };
+      });
+    }
+    if (lastDocumentId) {
+      setSelectedNodeId(lastDocumentId);
+      setSelectedNodeIds([lastDocumentId]);
+      setInspectorOpen(true);
+    }
+    flash(
+      documentCount === 0
+        ? skipped
+          ? "这些题录已经在知识库里，没有重复写入。"
+          : "没有可写入的题录。"
+        : `已写入 ${documentCount} 篇文献` +
+            (authorCount ? `、${authorCount} 位文献作者` : "") +
+            (skipped ? `，跳过 ${skipped} 篇已有文献` : "") +
+            "。图谱里是文献索引：点作者或文献才展开「著」线，能对上研究节点的会连「述」。",
+    );
+    window.requestAnimationFrame(() => {
+      flowInstance.current?.fitView({ padding: 0.18, maxZoom: 1.2 });
+    });
+  };
+
+  const arrangeBiblioGraphNodes = () => {
+    const count = nodes.filter((node) => isBiblioGraphNode(node)).length;
+    if (count === 0) {
+      flash("没有可排列的文献作者或计量文献。");
+      return;
+    }
+    commitGraphHistory();
+    updateActiveWorkspace((workspace) => {
+      const extraOccupied = workspace.graphAnnotations.map((annotation) => ({
+        x: annotation.x,
+        y: annotation.y,
+        width: annotation.width,
+        height: annotation.height,
+      }));
+      const nextNodes = applyBiblioArrange(
+        workspace.nodes,
+        extraOccupied,
+        workspace.relations,
+      );
+      const extraRelations = extraBiblioKnowledgeRelations(
+        nextNodes,
+        workspace.relations,
+      );
+      return {
+        ...workspace,
+        nodes: nextNodes,
+        relations: extraRelations.length
+          ? [...workspace.relations, ...extraRelations]
+          : workspace.relations,
+      };
+    });
+    flash("已排成文献索引：作者人名在左，文献按年在右。点选才展开著作线。");
+    window.requestAnimationFrame(() => {
+      flowInstance.current?.fitView({ padding: 0.18, maxZoom: 1.2 });
+    });
+  };
+
   const updateSelectedNode = (patch: Partial<KnowledgeNode>) => {
     setNodes((current) =>
       current.map((node) => (node.id === selectedNodeId ? { ...node, ...patch } : node)),
     );
+  };
+
+  const updateSelectedNodeGeo = (
+    field: "longitude" | "latitude" | "confidence",
+    raw: string,
+  ) => {
+    if (!selectedNode) return;
+    const parsed = parseCoordinate(raw);
+    const current = selectedNode.geo ?? {};
+    if (field === "confidence") {
+      if (!hasMapLocation(current) && parsed == null) return;
+      updateSelectedNode({
+        geo: {
+          ...current,
+          confidence:
+            parsed == null ? undefined : Math.min(1, Math.max(0, parsed)),
+        },
+      });
+      return;
+    }
+    updateSelectedNode({
+      geo: {
+        ...current,
+        [field]: parsed,
+      },
+    });
   };
 
   const openWorkspaceDialog = () => {
@@ -1585,6 +3229,8 @@ export default function Home() {
       scenes: [{ ...blankScene, id: `scene-${Date.now()}` }],
       topics: [],
       graphAnnotations: [],
+      deliveryPackages: [],
+      biblioCorpus: emptyBiblioCorpus(),
     };
     setWorkspaces((current) => [...current, created]);
     setActiveWorkspaceId(id);
@@ -1814,6 +3460,90 @@ export default function Home() {
     flash(`已复制 ${copies.length} 个节点`);
   };
 
+  const copySelectedNodes = () => {
+    const sourceNodes = nodes.filter((node) => selectedNodeIds.includes(node.id));
+    if (sourceNodes.length === 0) return;
+    graphClipboard.current = {
+      nodes: sourceNodes.map((node) => ({
+        ...node,
+        tags: [...node.tags],
+        assetIds: [...(node.assetIds ?? [])],
+      })),
+      relations: relations
+        .filter(
+          (relation) =>
+            selectedNodeIds.includes(relation.source) &&
+            selectedNodeIds.includes(relation.target),
+        )
+        .map((relation) => ({ ...relation })),
+    };
+    setGraphContextMenu(null);
+    flash(`已复制 ${sourceNodes.length} 个节点`);
+  };
+
+  const pasteGraphClipboard = () => {
+    const clipboard = graphClipboard.current;
+    if (!clipboard || clipboard.nodes.length === 0) return;
+    commitGraphHistory();
+    const idMap = new Map(
+      clipboard.nodes.map((node, index) => [
+        node.id,
+        `${node.id}-paste-${Date.now()}-${index}`,
+      ]),
+    );
+    const copies = clipboard.nodes.map((node) => ({
+      ...node,
+      id: idMap.get(node.id)!,
+      title: `${node.title} 副本`,
+      tags: [...node.tags],
+      assetIds: [...(node.assetIds ?? [])],
+      x: node.x + 48,
+      y: node.y + 48,
+    }));
+    const copiedRelations = clipboard.relations
+      .filter(
+        (relation) => idMap.has(relation.source) && idMap.has(relation.target),
+      )
+      .map((relation, index) => ({
+        ...relation,
+        id: `relation-paste-${Date.now()}-${index}`,
+        source: idMap.get(relation.source)!,
+        target: idMap.get(relation.target)!,
+      }));
+    updateActiveWorkspace((workspace) => ({
+      ...workspace,
+      nodes: [...workspace.nodes, ...copies],
+      relations: [...workspace.relations, ...copiedRelations],
+      assets: workspace.assets.map((asset) => ({
+        ...asset,
+        references:
+          asset.references +
+          copies.filter((node) => node.assetIds?.includes(asset.id)).length,
+      })),
+    }));
+    const copyIds = copies.map((node) => node.id);
+    setSelectedNodeIds(copyIds);
+    setSelectedNodeId(copyIds.at(-1) ?? "");
+    setGraphContextMenu(null);
+    flash(`已粘贴 ${copies.length} 个节点`);
+  };
+
+  const renameSelectedNode = () => {
+    const node = nodes.find((item) => item.id === selectedNodeId);
+    if (!node) return;
+    const nextTitle = window.prompt("重命名节点", node.title)?.trim();
+    if (!nextTitle || nextTitle === node.title) return;
+    commitGraphHistory();
+    updateActiveWorkspace((workspace) => ({
+      ...workspace,
+      nodes: workspace.nodes.map((item) =>
+        item.id === node.id ? { ...item, title: nextTitle } : item,
+      ),
+    }));
+    setGraphContextMenu(null);
+    flash(`已重命名为「${nextTitle}」`);
+  };
+
   const disconnectSelectedNodes = () => {
     if (selectedNodeIds.length === 0) return;
     const idSet = new Set(selectedNodeIds);
@@ -2002,24 +3732,28 @@ export default function Home() {
   };
 
   useEffect(() => {
-    if (section !== "graph") return;
+    if (section !== "graph" && section !== "nodes") return;
     const onGraphKeyDown = (event: KeyboardEvent) => {
-      const target = event.target;
-      if (
-        target instanceof HTMLElement &&
-        (target.isContentEditable ||
-          ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName))
-      ) {
-        return;
-      }
+      if (explorer || dialog) return;
+      if (isTypingTarget(event.target)) return;
       const ctrl = event.ctrlKey || event.metaKey;
       const key = event.key.toLowerCase();
 
-      if (ctrl && key === "a") {
+      if (section === "graph" && ctrl && key === "a") {
         event.preventDefault();
-        const ids = visibleNodes.map((node) => node.id);
+        const ids = graphNodes.map((node) => node.id);
         setSelectedNodeIds(ids);
         setSelectedNodeId(ids.at(-1) ?? "");
+        return;
+      }
+      if (ctrl && key === "c") {
+        event.preventDefault();
+        copySelectedNodes();
+        return;
+      }
+      if (ctrl && key === "v") {
+        event.preventDefault();
+        pasteGraphClipboard();
         return;
       }
       if (ctrl && key === "d") {
@@ -2037,12 +3771,17 @@ export default function Home() {
         redoGraph();
         return;
       }
-      if (key === "q" && !ctrl) {
+      if (key === "f2") {
+        event.preventDefault();
+        renameSelectedNode();
+        return;
+      }
+      if (section === "graph" && key === "q" && !ctrl) {
         event.preventDefault();
         alignSelectedGraphItems();
         return;
       }
-      if (key === "c" && !ctrl) {
+      if (section === "graph" && key === "c" && !ctrl) {
         event.preventDefault();
         createGraphAnnotation();
         return;
@@ -2054,7 +3793,7 @@ export default function Home() {
     };
     window.addEventListener("keydown", onGraphKeyDown);
     return () => window.removeEventListener("keydown", onGraphKeyDown);
-  }, [section, selectedNodeIds, visibleNodes, nodes, relations, activeWorkspaceId]);
+  }, [section, selectedNodeIds, graphNodes, nodes, relations, activeWorkspaceId]);
 
   const assetMenuTarget = assetContextMenu?.assetId
     ? assets.find((asset) => asset.id === assetContextMenu.assetId)
@@ -2087,6 +3826,21 @@ export default function Home() {
             setSelectedAssetId(assetMenuTarget.id);
             setSection("boards");
           },
+        },
+        {
+          id: "ocr",
+          label: "OCR 文本识别",
+          disabled: assetMenuTarget.kind !== "image",
+          onSelect: () => {
+            setSelectedAssetId(assetMenuTarget.id);
+            setSection("ocr");
+          },
+        },
+        {
+          id: "delivery-package",
+          label: "创建交付包",
+          disabled: assetMenuTarget.kind !== "model",
+          onSelect: () => void createDeliveryPackage(assetMenuTarget.id),
         },
         { id: "asset-separator-1", label: "", separator: true },
         {
@@ -2122,6 +3876,11 @@ export default function Home() {
           disabled: !assetMenuTarget.previewUrl,
           onSelect: () => downloadAsset(assetMenuTarget),
         },
+        {
+          id: "reveal",
+          label: "浏览到本地文件",
+          onSelect: () => void revealAsset(assetMenuTarget.id),
+        },
         { id: "asset-separator-2", label: "", separator: true },
         {
           id: "undo",
@@ -2155,6 +3914,21 @@ export default function Home() {
           id: "import",
           label: "导入文件或目录",
           onSelect: () => directoryInput.current?.click(),
+        },
+        {
+          id: "new-markdown",
+          label: "新建 Markdown 笔记",
+          onSelect: () => void createBlankTextAsset("md"),
+        },
+        {
+          id: "new-json",
+          label: "新建 JSON 数据",
+          onSelect: () => void createBlankTextAsset("json"),
+        },
+        {
+          id: "new-text",
+          label: "新建文本",
+          onSelect: () => void createBlankTextAsset("txt"),
         },
         {
           id: "paste",
@@ -2261,22 +4035,18 @@ export default function Home() {
           <button className="button-quiet" type="button" onClick={() => setVersionsOpen(true)}>
             版本记录
           </button>
-          <button
-            className="button-primary"
-            type="button"
-            onClick={() => {
-              setActiveTopicId(topics[0]?.id ?? "");
-              setExplorer(true);
-            }}
-          >
-            <span>▶</span> Explorer
-          </button>
         </div>
       </header>
 
       <div
         className={`studio-body ${sidebarCollapsed ? "sidebar-collapsed" : ""} ${
-          inspectorOpen && section !== "boards" ? "" : "inspector-hidden"
+          inspectorOpen &&
+          section !== "boards" &&
+          section !== "assets" &&
+          section !== "archive" &&
+          section !== "ocr"
+            ? ""
+            : "inspector-hidden"
         }`}
       >
         <aside className="studio-sidebar">
@@ -2297,65 +4067,80 @@ export default function Home() {
               </button>
 
               <div className="node-type-list">
-                {(Object.keys(kindMeta) as NodeKind[]).map((kind) => (
-                  <button
-                    type="button"
-                    key={kind}
-                    className={nodeKindFilter === kind ? "active" : ""}
-                    onClick={() => {
-                      setNodeKindFilter((current) =>
-                        current === kind ? "all" : kind,
-                      );
-                      setSection("graph");
-                    }}
-                  >
-                    <span
-                      className="node-type-mark"
-                      style={{ "--node-color": kindMeta[kind].color } as CSSProperties}
+                {(Object.keys(kindMeta) as NodeKind[]).map((kind) => {
+                  const hidden = hiddenNodeKinds.has(kind);
+                  return (
+                    <div
+                      className={`node-type-row${nodeKindFilter === kind ? " active" : ""}${hidden ? " is-hidden" : ""}`}
+                      key={kind}
                     >
-                      {kindMeta[kind].mark}
-                    </span>
-                    <strong>{kindMeta[kind].label}</strong>
-                    <small>{typeCounts[kind]}</small>
-                  </button>
-                ))}
+                      <button
+                        type="button"
+                        className="node-type-visibility"
+                        aria-pressed={!hidden}
+                        aria-label={hidden ? `显示${kindMeta[kind].label}` : `隐藏${kindMeta[kind].label}`}
+                        title={hidden ? "在图谱中显示" : "在图谱中隐藏"}
+                        onClick={() => {
+                          setHiddenNodeKinds((current) => {
+                            const next = new Set(current);
+                            if (next.has(kind)) next.delete(kind);
+                            else next.add(kind);
+                            return next;
+                          });
+                        }}
+                      >
+                        <LayerVisibilityIcon hidden={hidden} />
+                      </button>
+                      <button
+                        type="button"
+                        className="node-type-item"
+                        onClick={() => {
+                          setNodeKindFilter((current) =>
+                            current === kind ? "all" : kind,
+                          );
+                          setSection("graph");
+                        }}
+                      >
+                        <span
+                          className="node-type-mark"
+                          style={{ "--node-color": kindMeta[kind].color } as CSSProperties}
+                        >
+                          {kindMeta[kind].mark}
+                        </span>
+                        <strong>{kindMeta[kind].label}</strong>
+                        <small>{typeCounts[kind]}</small>
+                      </button>
+                    </div>
+                  );
+                })}
               </div>
 
-              <div
-                className="sidebar-section disabled"
-                aria-disabled="true"
-                title="专题功能完善中"
+              <button
+                type="button"
+                className={`sidebar-sync ${
+                  workspaceDirectoryConnected ? "connected" : ""
+                }`}
+                disabled={!workspaceDirectorySupported}
+                onClick={() => void connectCurrentWorkspaceDirectory()}
               >
-                <div className="sidebar-section-title">
-                  <span>专题</span>
-                  <button type="button" aria-label="新建专题" disabled>＋</button>
-                </div>
-                {topics.slice(0, 5).map((topic, index) => (
-                  <button
-                    className={`topic-link ${index === 0 ? "active" : ""}`}
-                    type="button"
-                    key={topic.id}
-                    disabled
-                  >
-                    <span className={`topic-dot ${index % 3 === 0 ? "rust" : index % 3 === 1 ? "green" : "blue"}`} />
-                    {topic.title}
-                    <small>{topic.nodeCount}</small>
-                  </button>
-                ))}
-                {topics.length === 0 && (
-                  <button className="topic-link empty" type="button" disabled>
-                    ＋ 创建第一个专题
-                  </button>
-                )}
-              </div>
-
-              <div className="sidebar-sync">
                 <span className="sync-icon">↻</span>
                 <div>
-                  <strong>本机数据已连接</strong>
-                  <small>资源文件保留在当前设备</small>
+                  <strong>
+                    {workspaceDirectoryConnected
+                      ? "本机工作区已连接"
+                      : workspaceDirectorySupported
+                        ? "连接本机工作区"
+                        : "使用内部资源库"}
+                  </strong>
+                  <small>
+                    {workspaceDirectoryConnected
+                      ? "源文件与交付目录可直接写入"
+                      : workspaceDirectorySupported
+                        ? "启用真实文件重命名与交付目录"
+                        : "资源仍保存在当前设备"}
+                  </small>
                 </div>
-              </div>
+              </button>
             </>
           )}
         </aside>
@@ -2426,13 +4211,21 @@ export default function Home() {
               <div className="graph-workspace">
                 <div className="graph-intro">
                   <div>
-                    <span>专题知识图谱</span>
+                    <span>工作区知识图谱</span>
                     <h1>{topics[0]?.title ?? activeWorkspace.name}</h1>
                   </div>
                   <div className="graph-intro-actions">
                     <p>
-                      {visibleNodes.length} 个可见节点 · {relations.length} 条关系 · 滚轮缩放
+                      {graphNodes.length} 个可见节点 · {graphRelationCount} 条关系
+                      {hiddenNodeKinds.size > 0
+                        ? ` · 已隐藏 ${hiddenNodeKinds.size} 类`
+                        : ""}
                     </p>
+                    {biblioNodeCount > 0 ? (
+                      <button type="button" onClick={arrangeBiblioGraphNodes}>
+                        一键排列
+                      </button>
+                    ) : null}
                     <button type="button" onClick={() => setInspectorOpen((open) => !open)}>
                       {inspectorOpen ? "隐藏属性" : "显示属性"}
                     </button>
@@ -2444,6 +4237,7 @@ export default function Home() {
                     nodes={flowNodes}
                     edges={flowEdges}
                     nodeTypes={graphNodeTypes}
+                    edgeTypes={editableRelationEdgeTypes}
                     onInit={(instance) => {
                       flowInstance.current =
                         instance as unknown as ReactFlowInstance<
@@ -2490,6 +4284,10 @@ export default function Home() {
                       setGraphContextMenu(null);
                       setConnectionPicker(null);
                       if (node.type === "knowledge") setInspectorOpen(true);
+                    }}
+                    onEdgeClick={(event, edge) => {
+                      event.stopPropagation();
+                      beginRelationEdit(edge.id);
                     }}
                     onPaneClick={() => {
                       setSelectedNodeId("");
@@ -2543,7 +4341,7 @@ export default function Home() {
                           ? "#c8b98e"
                           : kindMeta[
                               (node.data as KnowledgeFlowNode["data"]).node.kind
-                            ].color
+                            ]?.color ?? "#68624a"
                       }
                       nodeStrokeColor="#171714"
                       maskColor="rgba(247, 245, 239, 0.76)"
@@ -2576,6 +4374,16 @@ export default function Home() {
                               } else {
                                 flash("请先选择一个节点，再点击或拖入资产");
                               }
+                            }}
+                            onContextMenu={(event) => {
+                              event.preventDefault();
+                              event.stopPropagation();
+                              setSelectedAssetId(asset.id);
+                              setAssetContextMenu({
+                                x: event.clientX,
+                                y: event.clientY,
+                                assetId: asset.id,
+                              });
                             }}
                           >
                             <span className={`asset-${asset.kind}`}>{assetGlyph(asset.kind)}</span>
@@ -2624,6 +4432,27 @@ export default function Home() {
               </div>
             )}
 
+            {section === "map" && (
+              <StudioMapCanvas
+                nodes={mapNodes}
+                relations={mapRelations}
+                selectedNodeId={selectedNodeId}
+                onSelectNode={selectMapNode}
+                onCreatePlaces={createMapPlaces}
+                onNotice={flash}
+              />
+            )}
+
+            {section === "biblio" && (
+              <StudioBiblioCanvas
+                corpus={biblioCorpus}
+                onCorpusChange={setBiblioCorpus}
+                onWriteRecords={writeBiblioRecords}
+                onArrangeGraph={arrangeBiblioGraphNodes}
+                onNotice={flash}
+              />
+            )}
+
             {section === "nodes" && (
               <div className="nodes-view">
                 <div className="section-hero compact">
@@ -2636,7 +4465,17 @@ export default function Home() {
                     ＋ 创建 Node
                   </button>
                 </div>
-                <div className="node-table">
+                <div
+                  className="node-table"
+                  onContextMenu={(event) => {
+                    event.preventDefault();
+                    setGraphContextMenu({
+                      x: event.clientX,
+                      y: event.clientY,
+                      nodeId: null,
+                    });
+                  }}
+                >
                   <div className="node-table-header">
                     <span>节点</span>
                     <span>类型</span>
@@ -2644,7 +4483,7 @@ export default function Home() {
                     <span>资源</span>
                     <span>更新</span>
                   </div>
-                  {visibleNodes.map((node, index) => (
+                  {listedNodes.map((node, index) => (
                     <button
                       type="button"
                       key={node.id}
@@ -2652,6 +4491,17 @@ export default function Home() {
                       onClick={() => {
                         setSelectedNodeId(node.id);
                         setSelectedNodeIds([node.id]);
+                      }}
+                      onContextMenu={(event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        setSelectedNodeId(node.id);
+                        setSelectedNodeIds([node.id]);
+                        setGraphContextMenu({
+                          x: event.clientX,
+                          y: event.clientY,
+                          nodeId: node.id,
+                        });
                       }}
                     >
                       <span className="node-table-name">
@@ -2675,7 +4525,10 @@ export default function Home() {
 
             {section === "assets" && (
               <div className="assets-view">
-                <div className="asset-browser">
+                <div
+                  ref={assetBrowserRef}
+                  className="asset-browser"
+                >
                   <div className="asset-tree-panel">
                     <div className="panel-heading">
                       <span>资源目录</span>
@@ -2695,6 +4548,37 @@ export default function Home() {
                       >
                         <span>▾</span> 📁 Assets <small>{assets.length}</small>
                       </button>
+                      <button
+                        type="button"
+                        className={
+                          assetFolderFilter === "Deliveries" ? "active" : ""
+                        }
+                        onClick={() => setAssetFolderFilter("Deliveries")}
+                      >
+                        <span>{deliveryPackages.length ? "▾" : "›"}</span>
+                        📦 交付包
+                        <small>{deliveryPackages.length}</small>
+                      </button>
+                      {deliveryPackages.map((item) => (
+                        <button
+                          type="button"
+                          className={`nested ${
+                            assetFolderFilter ===
+                            `Deliveries/${item.name}`
+                              ? "active"
+                              : ""
+                          }`}
+                          key={item.id}
+                          onClick={() =>
+                            setAssetFolderFilter(
+                              `Deliveries/${item.name}`,
+                            )
+                          }
+                        >
+                          <span />
+                          📁 {item.name}
+                        </button>
+                      ))}
                       <button
                         type="button"
                         className={assetFolderFilter === "图像档案" ? "active" : ""}
@@ -2751,9 +4635,23 @@ export default function Home() {
                       <span>↓</span>
                       <strong>拖入文件或整个目录</strong>
                       <small>文件将复制到当前 Workspace</small>
-                      <button type="button" onClick={() => directoryInput.current?.click()}>
-                        选择目录
-                      </button>
+                      <div className="drop-zone-actions">
+                        <button type="button" onClick={() => directoryInput.current?.click()}>
+                          选择目录
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void createBlankTextAsset("md")}
+                        >
+                          新建笔记
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void createBlankTextAsset("json")}
+                        >
+                          新建 JSON
+                        </button>
+                      </div>
                       <input
                         ref={directoryInput}
                         type="file"
@@ -2847,6 +4745,78 @@ export default function Home() {
                   </div>
 
                   <div
+                    className="asset-panel-resizer"
+                    role="separator"
+                    tabIndex={0}
+                    aria-label="调整资源画廊与资源预览宽度"
+                    aria-orientation="vertical"
+                    aria-valuemin={ASSET_PREVIEW_MIN_WIDTH}
+                    aria-valuemax={900}
+                    aria-valuenow={assetPreviewWidth}
+                    aria-valuetext={`资源预览宽度 ${assetPreviewWidth} 像素`}
+                    title="左右拖动调整画廊与预览宽度"
+                    onPointerDown={(event) => {
+                      if (event.button !== 0) return;
+                      event.preventDefault();
+                      assetResizeState.current = {
+                        pointerId: event.pointerId,
+                        ...getAssetPreviewWidthBounds(),
+                      };
+                      event.currentTarget.setPointerCapture(event.pointerId);
+                      assetBrowserRef.current?.classList.add("is-resizing");
+                    }}
+                    onPointerMove={(event) => {
+                      const resize = assetResizeState.current;
+                      const browser = assetBrowserRef.current;
+                      if (
+                        !resize ||
+                        resize.pointerId !== event.pointerId ||
+                        !browser
+                      ) {
+                        return;
+                      }
+                      const nextWidth = Math.max(
+                        resize.min,
+                        Math.min(
+                          resize.max,
+                          browser.getBoundingClientRect().right - event.clientX,
+                        ),
+                      );
+                      assetPreviewWidthRef.current = nextWidth;
+                      if (assetResizeFrame.current !== null) {
+                        window.cancelAnimationFrame(assetResizeFrame.current);
+                      }
+                      assetResizeFrame.current = window.requestAnimationFrame(
+                        () => {
+                          browser.style.setProperty(
+                            "--asset-preview-width",
+                            `${Math.round(assetPreviewWidthRef.current)}px`,
+                          );
+                          assetResizeFrame.current = null;
+                        },
+                      );
+                    }}
+                    onPointerUp={finishAssetPanelResize}
+                    onPointerCancel={finishAssetPanelResize}
+                    onKeyDown={(event) => {
+                      if (
+                        event.key !== "ArrowLeft" &&
+                        event.key !== "ArrowRight"
+                      ) {
+                        return;
+                      }
+                      event.preventDefault();
+                      applyAssetPreviewWidth(
+                        assetPreviewWidthRef.current +
+                          (event.key === "ArrowLeft" ? 24 : -24),
+                        true,
+                      );
+                    }}
+                  >
+                    <span aria-hidden="true" />
+                  </div>
+
+                  <div
                     className="asset-preview-panel"
                     onContextMenu={(event) => {
                       event.preventDefault();
@@ -2858,83 +4828,31 @@ export default function Home() {
                       });
                     }}
                   >
-                    <div className="panel-heading">
-                      <span>资源预览</span>
-                      <button
-                        type="button"
-                        aria-label="下载当前资源"
-                        title="下载当前资源"
-                        onClick={downloadSelectedAsset}
-                      >
-                        ↓
-                      </button>
-                    </div>
-                    {selectedAsset && (
-                      <div className="asset-preview">
-                        <div className={`asset-preview-stage asset-${selectedAsset.kind}`}>
-                          {selectedAsset.previewUrl &&
-                          selectedAsset.kind === "image" ? (
-                            <img src={selectedAsset.previewUrl} alt={selectedAsset.name} />
-                          ) : selectedAsset.previewUrl &&
-                            selectedAsset.kind === "video" ? (
-                            <video src={selectedAsset.previewUrl} controls />
-                          ) : selectedAsset.previewUrl &&
-                            selectedAsset.kind === "model" ? (
-                            <ModelPreview
-                              url={selectedAsset.previewUrl}
-                              fileName={selectedAsset.name}
-                            />
-                          ) : selectedAsset.previewUrl &&
-                            (selectedAsset.kind === "document" ||
-                              selectedAsset.kind === "audio" ||
-                              selectedAsset.kind === "text") ? (
-                            <DocumentMediaPreview
-                              url={selectedAsset.previewUrl}
-                              fileName={selectedAsset.name}
-                            />
-                          ) : selectedAsset.kind === "model" ? (
-                            <div className="model-file-missing">
-                              <span>3D</span>
-                              <strong>示例资源未绑定本机模型文件</strong>
-                              <small>导入 GLB、GLTF、FBX 或 OBJ 后可直接交互预览</small>
-                            </div>
-                          ) : (
-                            <span>{assetGlyph(selectedAsset.kind)}</span>
-                          )}
-                        </div>
-                        <div className="asset-preview-meta">
-                          <span>{selectedAsset.kind.toUpperCase()}</span>
-                          <h3>{selectedAsset.name}</h3>
-                          <p>{selectedAsset.path}</p>
-                          <dl>
-                            <div>
-                              <dt>文件大小</dt>
-                              <dd>{selectedAsset.size}</dd>
-                            </div>
-                            <div>
-                              <dt>节点引用</dt>
-                              <dd>{selectedAsset.references}</dd>
-                            </div>
-                            <div>
-                              <dt>状态</dt>
-                              <dd>本机可用</dd>
-                            </div>
-                          </dl>
-                          <button
-                            type="button"
-                            className="button-primary"
-                            disabled={!selectedNode}
-                            onClick={() => {
-                              if (!selectedNode || !selectedAsset) return;
-                              attachAssetToNode(selectedNode.id, selectedAsset.id);
-                              setSection("graph");
-                            }}
-                          >
-                            关联到{selectedNode ? `「${selectedNode.title}」` : " Node"}
-                          </button>
-                        </div>
-                      </div>
-                    )}
+                    <AssetPreview
+                      asset={selectedAsset}
+                      onDownload={downloadSelectedAsset}
+                      onSaveText={saveTextAsset}
+                      action={
+                        <button
+                          type="button"
+                          className="button-primary"
+                          disabled={!selectedNode}
+                          onClick={() => {
+                            if (!selectedNode || !selectedAsset) return;
+                            attachAssetToNode(
+                              selectedNode.id,
+                              selectedAsset.id,
+                            );
+                            setSection("graph");
+                          }}
+                        >
+                          关联到
+                          {selectedNode
+                            ? `「${selectedNode.title}」`
+                            : " Node"}
+                        </button>
+                      }
+                    />
                   </div>
                 </div>
               </div>
@@ -2948,6 +4866,11 @@ export default function Home() {
                 assets={assets}
                 selectedAssetId={selectedAssetId}
                 onSelectAsset={setSelectedAssetId}
+                onRenameAsset={(assetId) => void renameAsset(assetId)}
+                onCreateDeliveryPackage={(assetId) =>
+                  void createDeliveryPackage(assetId)
+                }
+                onDeleteAsset={deleteAsset}
                 onHydrateAsset={(assetId, previewUrl) => {
                   setAssets((current) =>
                     current.map((asset) =>
@@ -2968,6 +4891,28 @@ export default function Home() {
                         ),
                     ),
                   ]);
+                  void Promise.all(
+                    createdAssets.map(async (asset) => {
+                      const blob = await readLocalAssetBlob(asset.id);
+                      if (!blob) return;
+                      const written = await writeWorkspaceAssetFile(
+                        activeWorkspaceId,
+                        asset,
+                        blob,
+                      ).catch(() => false);
+                      if (!written) return;
+                      const localPath = await workspaceAssetLocalPath(
+                        activeWorkspaceId,
+                        asset,
+                      );
+                      if (!localPath) return;
+                      setAssets((current) =>
+                        current.map((item) =>
+                          item.id === asset.id ? { ...item, localPath } : item,
+                        ),
+                      );
+                    }),
+                  );
                   setSelectedAssetId(createdAssets[0].id);
                   flash(`已自动创建 ${createdAssets.length} 个资源`);
                 }}
@@ -2983,6 +4928,36 @@ export default function Home() {
                     ),
                   );
                 }}
+                onRevealAsset={(assetId) => void revealAsset(assetId)}
+                onSaveText={saveTextAsset}
+              />
+            )}
+
+            {section === "archive" && (
+              <ArchiveView
+                workspaceId={activeWorkspace.id}
+                workspaceName={activeWorkspace.name}
+                nodes={nodes}
+                relations={relations}
+                assets={assets}
+                onUpdateAsset={(assetId, patch) =>
+                  setAssets((current) =>
+                    current.map((asset) =>
+                      asset.id === assetId ? { ...asset, ...patch } : asset,
+                    ),
+                  )
+                }
+                onNotice={flash}
+              />
+            )}
+
+            {section === "ocr" && (
+              <OcrPanel
+                asset={selectedAsset}
+                onCreateCorrectedText={(source, document) =>
+                  void createCorrectedOcrText(source as AssetItem, document)
+                }
+                onNotice={flash}
               />
             )}
 
@@ -3134,7 +5109,7 @@ export default function Home() {
           </div>
         </section>
 
-        {section !== "assets" && section !== "boards" && selectedNode && (
+        {section !== "assets" && section !== "boards" && section !== "archive" && selectedNode && (
           <aside className="inspector-panel">
             <div className="inspector-header">
               <div>
@@ -3189,11 +5164,92 @@ export default function Home() {
                       />
                     </label>
                     <label>
+                      <span>起年</span>
+                      <input
+                        inputMode="numeric"
+                        placeholder="1602"
+                        value={selectedNode.yearFrom ?? ""}
+                        onChange={(event) =>
+                          updateSelectedNode({ yearFrom: parseYear(event.target.value) })
+                        }
+                      />
+                    </label>
+                    <label>
+                      <span>迄年</span>
+                      <input
+                        inputMode="numeric"
+                        placeholder="2026"
+                        value={selectedNode.yearTo ?? ""}
+                        onChange={(event) =>
+                          updateSelectedNode({ yearTo: parseYear(event.target.value) })
+                        }
+                      />
+                    </label>
+                    <label>
+                      <span>经度</span>
+                      <input
+                        inputMode="decimal"
+                        placeholder="113.54072"
+                        value={selectedNode.geo?.longitude ?? ""}
+                        onChange={(event) =>
+                          updateSelectedNodeGeo("longitude", event.target.value)
+                        }
+                      />
+                    </label>
+                    <label>
+                      <span>纬度</span>
+                      <input
+                        inputMode="decimal"
+                        placeholder="22.19756"
+                        value={selectedNode.geo?.latitude ?? ""}
+                        onChange={(event) =>
+                          updateSelectedNodeGeo("latitude", event.target.value)
+                        }
+                      />
+                    </label>
+                    <label>
+                      <span>坐标可信度 0–1</span>
+                      <input
+                        inputMode="decimal"
+                        placeholder="0.9"
+                        value={selectedNode.geo?.confidence ?? ""}
+                        onChange={(event) =>
+                          updateSelectedNodeGeo("confidence", event.target.value)
+                        }
+                      />
+                    </label>
+                    {(hasMapLocation(selectedNode.geo) ||
+                      hasMapPolygon(selectedNode.geo)) && (
+                      <button
+                        type="button"
+                        className="button-quiet"
+                        onClick={() => setSection("map")}
+                      >
+                        在地图中查看
+                      </button>
+                    )}
+                    <label>
                       <span>摘要</span>
                       <textarea
                         rows={4}
                         value={selectedNode.summary}
                         onChange={(event) => updateSelectedNode({ summary: event.target.value })}
+                      />
+                    </label>
+                    <label>
+                      <span>来源</span>
+                      <input
+                        value={selectedNode.source ?? ""}
+                        placeholder="文献、馆藏或调查来源"
+                        onChange={(event) => updateSelectedNode({ source: event.target.value })}
+                      />
+                    </label>
+                    <label>
+                      <span>版权</span>
+                      <input
+                        value={selectedNode.rights ?? ""}
+                        placeholder="版权持有人或许可方式"
+                        onChange={(event) => updateSelectedNode({ rights: event.target.value })}
                       />
                     </label>
                     <div className="tag-field">
@@ -3265,10 +5321,24 @@ export default function Home() {
                 </div>
                 <div className="mini-assets">
                   {selectedNodeAssets.map((asset) => (
-                    <button type="button" key={asset.id} onClick={() => {
-                      setSelectedAssetId(asset.id);
-                      setSection("assets");
-                    }}>
+                    <button
+                      type="button"
+                      key={asset.id}
+                      onClick={() => {
+                        setSelectedAssetId(asset.id);
+                        setSection("assets");
+                      }}
+                      onContextMenu={(event) => {
+                        event.preventDefault();
+                        event.stopPropagation();
+                        setSelectedAssetId(asset.id);
+                        setAssetContextMenu({
+                          x: event.clientX,
+                          y: event.clientY,
+                          assetId: asset.id,
+                        });
+                      }}
+                    >
                       <span className={`asset-${asset.kind}`}>{assetGlyph(asset.kind)}</span>
                       <small>{asset.name}</small>
                     </button>
@@ -3348,6 +5418,37 @@ export default function Home() {
                   <span>复制节点</span>
                   <kbd>Ctrl+D</kbd>
                 </button>
+                <button type="button" onClick={copySelectedNodes}>
+                  <span>复制</span>
+                  <kbd>Ctrl+C</kbd>
+                </button>
+                <button type="button" onClick={pasteGraphClipboard}>
+                  <span>粘贴</span>
+                  <kbd>Ctrl+V</kbd>
+                </button>
+                <button type="button" onClick={renameSelectedNode}>
+                  <span>重命名</span>
+                  <kbd>F2</kbd>
+                </button>
+                <button
+                  type="button"
+                  disabled={!hasMapLocation(
+                    nodes.find((item) => item.id === graphContextMenu.nodeId)?.geo,
+                  )}
+                  onClick={() => {
+                    setSection("map");
+                    setGraphContextMenu(null);
+                  }}
+                >
+                  <span>在地图中查看</span>
+                </button>
+                <button
+                  type="button"
+                  disabled={!nodes.find((item) => item.id === graphContextMenu.nodeId)?.assetIds?.length}
+                  onClick={() => revealNodeLocalFile(graphContextMenu.nodeId!)}
+                >
+                  <span>浏览到本地文件</span>
+                </button>
                 <button type="button" onClick={disconnectSelectedNodes}>
                   <span>断开全部关系</span>
                 </button>
@@ -3359,6 +5460,16 @@ export default function Home() {
               </>
             ) : (
               <>
+                <button
+                  type="button"
+                  onClick={() => {
+                    pasteGraphClipboard();
+                    setGraphContextMenu(null);
+                  }}
+                >
+                  <span>粘贴节点</span>
+                  <kbd>Ctrl+V</kbd>
+                </button>
                 <button type="button" onClick={() => {
                   flowInstance.current?.fitView({ padding: 0.22, duration: 240 });
                   setGraphContextMenu(null);
@@ -3540,7 +5651,7 @@ export default function Home() {
                   onKeyDown={(event) => event.key === "Enter" && createWorkspace()}
                   placeholder="例如：泉州海丝遗产研究"
                 />
-                <small>节点、关系、资源和专题会保存在这个本地工作区中。</small>
+                <small>节点、关系、资源和归档元数据会保存在这个本地工作区中。</small>
               </label>
             ) : (
               <>

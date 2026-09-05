@@ -2,6 +2,11 @@ import vinext from "vinext";
 import { defineConfig } from "vite";
 import hostingConfig from "./.openai/hosting.json";
 import { sites } from "./build/sites-vite-plugin";
+import {
+  javaRandomEsmPlugin,
+  vosviewerOptimizeDeps,
+  vosviewerReact19Plugin,
+} from "./build/java-random-esm-plugin";
 
 const SITE_CREATOR_PLACEHOLDER_DATABASE_ID =
   "00000000-0000-4000-8000-000000000000";
@@ -44,10 +49,21 @@ export default defineConfig(async () => {
   const { cloudflare } = await import("@cloudflare/vite-plugin");
 
   return {
-    server: isCodexSeatbeltSandbox
-      ? { watch: { useFsEvents: false, usePolling: true } }
-      : undefined,
+    server: {
+      // Vite enables browser-console forwarding automatically in agent environments.
+      // During an HMR reconnect that forwarder can send before its transport connects,
+      // recursively producing the blocking "send was called before connect" overlay.
+      // Keep normal HMR and its compilation overlay, but do not forward runtime console
+      // events back to the local dev server.
+      forwardConsole: false,
+      ...(isCodexSeatbeltSandbox
+        ? { watch: { useFsEvents: false, usePolling: true } }
+        : {}),
+    },
+    optimizeDeps: vosviewerOptimizeDeps(),
     plugins: [
+      javaRandomEsmPlugin(),
+      vosviewerReact19Plugin(),
       vinext(),
       sites(),
       cloudflare({

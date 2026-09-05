@@ -36,6 +36,9 @@ import {
   ApplicationContextMenu,
   type ApplicationContextMenuItem,
 } from "./application-context-menu";
+import { nativeFilePath } from "./studio-hotkeys";
+import { AssetPreview } from "./asset-preview";
+import type { TextSaveReason } from "./text-documents";
 
 export type BoardAsset = {
   id: string;
@@ -44,7 +47,19 @@ export type BoardAsset = {
   kind: "image" | "document" | "model" | "video" | "audio" | "text";
   size: string;
   references: number;
+  description?: string;
+  creator?: string;
+  date?: string;
+  source?: string;
+  rights?: string;
+  mimeType?: string;
+  fileSize?: number;
+  duration?: number;
+  sampleRate?: number;
+  channels?: number;
+  fileGroupIds?: string[];
   previewUrl?: string;
+  localPath?: string;
   sourceAssetId?: string;
   cropRegion?: { x: number; y: number; w: number; h: number };
 };
@@ -101,21 +116,15 @@ const ReactFlowCanvas = dynamic(
   () => import("@xyflow/react").then((module) => module.ReactFlow),
   { ssr: false },
 );
-const ModelPreview = dynamic(
-  () => import("./model-preview").then((module) => module.ModelPreview),
-  { ssr: false },
-);
-const DocumentMediaPreview = dynamic(
-  () =>
-    import("./document-media-preview").then(
-      (module) => module.DocumentMediaPreview,
-    ),
-  { ssr: false },
-);
 
 const MIN_CROP = 0.02;
 const MIN_DOCK_HEIGHT = 118;
 const MAX_DOCK_HEIGHT = 340;
+const REFERENCE_PREVIEW_DEFAULT_WIDTH = 420;
+const LEGACY_REFERENCE_PREVIEW_DEFAULT_WIDTH = 310;
+const MIN_PREVIEW_WIDTH = 300;
+const MAX_PREVIEW_WIDTH = 900;
+const MIN_BOARD_CANVAS_WIDTH = 440;
 
 function clampDockHeight(height: number) {
   return Math.max(MIN_DOCK_HEIGHT, Math.min(MAX_DOCK_HEIGHT, height));
@@ -150,7 +159,10 @@ function fileKind(file: File): BoardAsset["kind"] {
   if (name.endsWith(".glb") || name.endsWith(".gltf") || name.endsWith(".obj") || name.endsWith(".fbx")) {
     return "model";
   }
-  if (file.type.startsWith("text/") || name.endsWith(".md") || name.endsWith(".txt")) {
+  if (
+    file.type.startsWith("text/") ||
+    /\.(md|txt|json|xml|html|css|js|ts)$/i.test(name)
+  ) {
     return "text";
   }
   return "document";
@@ -839,8 +851,17 @@ type ReferenceBoardViewProps = {
   selectedAssetId: string;
   onSelectAsset: (assetId: string) => void;
   onCreateAssets: (assets: BoardAsset[]) => void;
+  onRenameAsset: (assetId: string) => void;
+  onCreateDeliveryPackage: (assetId: string) => void;
+  onDeleteAsset: (assetId: string) => void;
   onHydrateAsset: (assetId: string, previewUrl: string) => void;
   onChangeAssetReference: (assetId: string, delta: number) => void;
+  onRevealAsset: (assetId: string) => void;
+  onSaveText?: (
+    assetId: string,
+    text: string,
+    reason: TextSaveReason,
+  ) => Promise<void> | void;
 };
 
 export function ReferenceBoardView({
@@ -850,8 +871,13 @@ export function ReferenceBoardView({
   selectedAssetId,
   onSelectAsset,
   onCreateAssets,
+  onRenameAsset,
+  onCreateDeliveryPackage,
+  onDeleteAsset,
   onHydrateAsset,
   onChangeAssetReference,
+  onRevealAsset,
+  onSaveText,
 }: ReferenceBoardViewProps) {
   const storageKey = `inscription-reference-board-v1-${workspaceId}`;
   const [boardTitle, setBoardTitle] = useState(`${workspaceName} · 参考板`);
@@ -867,12 +893,14 @@ export function ReferenceBoardView({
   );
   const [edges, setEdges] = useState<Edge[]>([]);
   const [dockHeight, setDockHeight] = useState(190);
+  const [previewWidth, setPreviewWidth] = useState(
+    REFERENCE_PREVIEW_DEFAULT_WIDTH,
+  );
   const [dockCollapsed, setDockCollapsed] = useState(false);
   const [assetFilter, setAssetFilter] = useState<"board" | "all">("board");
   const [assetSourceFilter, setAssetSourceFilter] = useState<
-    "all" | "board-import" | "clipboard" | "slices"
+    "all" | "board-import" | "clipboard" | "slices" | "deliveries"
   >("all");
-  const [previewTab, setPreviewTab] = useState<"preview" | "info">("preview");
   const [splitAsset, setSplitAsset] = useState<BoardAsset | null>(null);
   const [boardContextMenu, setBoardContextMenu] =
     useState<BoardContextMenuState | null>(null);
@@ -906,7 +934,9 @@ export function ReferenceBoardView({
         asset.path.includes("参考板导入")) ||
       (assetSourceFilter === "clipboard" && asset.path.includes("剪贴板")) ||
       (assetSourceFilter === "slices" &&
-        (asset.path.includes("_切片") || Boolean(asset.sourceAssetId)));
+        (asset.path.includes("_切片") || Boolean(asset.cropRegion))) ||
+      (assetSourceFilter === "deliveries" &&
+        asset.path.includes("Deliveries/"));
     return boardMatches && sourceMatches;
   });
 
@@ -964,6 +994,7 @@ export function ReferenceBoardView({
         nodes?: BoardNode[];
         edges?: Edge[];
         dockHeight?: number;
+        previewWidth?: number;
       };
       if (parsed.title) setBoardTitle(parsed.title);
       if (Array.isArray(parsed.nodes)) {
@@ -973,6 +1004,18 @@ export function ReferenceBoardView({
       }
       if (Array.isArray(parsed.edges)) setEdges(parsed.edges);
       if (parsed.dockHeight) setDockHeight(parsed.dockHeight);
+      if (parsed.previewWidth) {
+        const restoredPreviewWidth =
+          parsed.previewWidth === LEGACY_REFERENCE_PREVIEW_DEFAULT_WIDTH
+            ? REFERENCE_PREVIEW_DEFAULT_WIDTH
+            : parsed.previewWidth;
+        setPreviewWidth(
+          Math.max(
+            MIN_PREVIEW_WIDTH,
+            Math.min(MAX_PREVIEW_WIDTH, restoredPreviewWidth),
+          ),
+        );
+      }
     } catch {
       // A malformed local draft should not prevent opening the board.
     }
@@ -1010,11 +1053,19 @@ export function ReferenceBoardView({
           nodes: serializableNodes,
           edges,
           dockHeight,
+          previewWidth,
         }),
       );
     }, 180);
     return () => window.clearTimeout(timer);
-  }, [boardTitle, dockHeight, edges, nodes, storageKey]);
+  }, [
+    boardTitle,
+    dockHeight,
+    edges,
+    nodes,
+    previewWidth,
+    storageKey,
+  ]);
 
   const addAssetsAt = useCallback(
     (newAssets: BoardAsset[], x: number, y: number) => {
@@ -1052,9 +1103,12 @@ export function ReferenceBoardView({
           path: `${source}/${boardTitle}/`,
           kind,
           size: formatBytes(file.size),
+          mimeType: file.type || undefined,
+          fileSize: file.size,
           references: 1,
           previewUrl:
             URL.createObjectURL(file),
+          localPath: nativeFilePath(file),
         };
       });
       await Promise.all(
@@ -1376,6 +1430,9 @@ export function ReferenceBoardView({
       } else if (ctrl && key === "d") {
         event.preventDefault();
         duplicateBoardSelection();
+      } else if (key === "f2") {
+        event.preventDefault();
+        if (selectedAssetId) onRenameAsset(selectedAssetId);
       } else if (key === "q") {
         event.preventDefault();
         alignSelectionTop();
@@ -1389,7 +1446,7 @@ export function ReferenceBoardView({
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [alignSelectionTop, createCommentFrame, onChangeAssetReference]);
+  }, [alignSelectionTop, createCommentFrame, onChangeAssetReference, onRenameAsset, selectedAssetId]);
 
   const addExistingAsset = (
     asset: BoardAsset,
@@ -1621,6 +1678,90 @@ export function ReferenceBoardView({
     resizeHandle.addEventListener("lostpointercapture", finishResize);
   };
 
+  const startPreviewResize = (
+    event: ReactPointerEvent<HTMLButtonElement>,
+  ) => {
+    event.preventDefault();
+    if (event.button !== 0) return;
+    const resizeHandle = event.currentTarget;
+    const boardView = boardViewRef.current;
+    const boardMain = resizeHandle.parentElement;
+    if (!boardView || !boardMain) return;
+
+    const pointerId = event.pointerId;
+    const startX = event.clientX;
+    const startWidth = previewWidth;
+    const maxWidth = Math.max(
+      MIN_PREVIEW_WIDTH,
+      Math.min(
+        MAX_PREVIEW_WIDTH,
+        boardMain.clientWidth - MIN_BOARD_CANVAS_WIDTH - 7,
+      ),
+    );
+    let pendingWidth = startWidth;
+    let animationFrame: number | null = null;
+    let finished = false;
+
+    resizeHandle.setPointerCapture(pointerId);
+    boardView.dataset.previewResizing = "true";
+
+    const paintPendingWidth = () => {
+      animationFrame = null;
+      boardView.style.setProperty(
+        "--reference-preview-width",
+        `${pendingWidth}px`,
+      );
+    };
+
+    const onMove = (moveEvent: PointerEvent) => {
+      if (moveEvent.pointerId !== pointerId) return;
+      pendingWidth = Math.max(
+        MIN_PREVIEW_WIDTH,
+        Math.min(
+          maxWidth,
+          startWidth + startX - moveEvent.clientX,
+        ),
+      );
+      if (animationFrame === null) {
+        animationFrame = window.requestAnimationFrame(paintPendingWidth);
+      }
+    };
+
+    const finishResize = (finishEvent?: PointerEvent) => {
+      if (
+        finished ||
+        (finishEvent && finishEvent.pointerId !== pointerId)
+      ) {
+        return;
+      }
+      finished = true;
+      if (animationFrame !== null) {
+        window.cancelAnimationFrame(animationFrame);
+      }
+      paintPendingWidth();
+      setPreviewWidth(pendingWidth);
+      delete boardView.dataset.previewResizing;
+      resizeHandle.removeEventListener("pointermove", onMove);
+      resizeHandle.removeEventListener("pointerup", finishResize);
+      resizeHandle.removeEventListener("pointercancel", finishResize);
+      resizeHandle.removeEventListener(
+        "lostpointercapture",
+        finishResize,
+      );
+      if (resizeHandle.hasPointerCapture(pointerId)) {
+        resizeHandle.releasePointerCapture(pointerId);
+      }
+    };
+
+    resizeHandle.addEventListener("pointermove", onMove);
+    resizeHandle.addEventListener("pointerup", finishResize);
+    resizeHandle.addEventListener("pointercancel", finishResize);
+    resizeHandle.addEventListener(
+      "lostpointercapture",
+      finishResize,
+    );
+  };
+
   const contextNode = boardContextMenu?.nodeId
     ? nodes.find((node) => node.id === boardContextMenu.nodeId)
     : undefined;
@@ -1663,10 +1804,27 @@ export function ReferenceBoardView({
               ),
           },
           {
+            id: "dock-rename",
+            label: "重命名源资产",
+            shortcut: "F2",
+            onSelect: () => onRenameAsset(contextAsset.id),
+          },
+          {
+            id: "dock-delivery",
+            label: "创建交付包",
+            disabled: contextAsset.kind !== "model",
+            onSelect: () => onCreateDeliveryPackage(contextAsset.id),
+          },
+          {
             id: "dock-download",
             label: "下载原文件",
             disabled: !contextAsset.previewUrl,
             onSelect: () => downloadBoardAsset(contextAsset),
+          },
+          {
+            id: "dock-reveal",
+            label: "浏览到本地文件",
+            onSelect: () => onRevealAsset(contextAsset.id),
           },
           {
             id: "dock-split",
@@ -1674,6 +1832,21 @@ export function ReferenceBoardView({
             disabled:
               contextAsset.kind !== "image" || !contextAsset.previewUrl,
             onSelect: () => setSplitAsset(contextAsset),
+          },
+          {
+            id: "dock-separator",
+            label: "",
+            separator: true,
+          },
+          {
+            id: "dock-delete-source",
+            label:
+              contextAsset.references > 0
+                ? `删除源资产（仍有 ${contextAsset.references} 个引用）`
+                : "删除源资产",
+            disabled: contextAsset.references > 0,
+            danger: true,
+            onSelect: () => onDeleteAsset(contextAsset.id),
           },
         ]
       : [
@@ -1708,12 +1881,30 @@ export function ReferenceBoardView({
                         onSelect: () => downloadBoardAsset(contextAsset),
                       },
                       {
+                        id: "reveal",
+                        label: "浏览到本地文件",
+                        onSelect: () => onRevealAsset(contextAsset.id),
+                      },
+                      {
                         id: "split",
                         label: "图片切图",
                         disabled:
                           contextAsset.kind !== "image" ||
                           !contextAsset.previewUrl,
                         onSelect: () => setSplitAsset(contextAsset),
+                      },
+                      {
+                        id: "rename-asset",
+                        label: "重命名源资产",
+                        shortcut: "F2",
+                        onSelect: () => onRenameAsset(contextAsset.id),
+                      },
+                      {
+                        id: "create-delivery",
+                        label: "创建交付包",
+                        disabled: contextAsset.kind !== "model",
+                        onSelect: () =>
+                          onCreateDeliveryPackage(contextAsset.id),
                       },
                     ]
                   : []),
@@ -1766,7 +1957,7 @@ export function ReferenceBoardView({
           },
           {
             id: "delete",
-            label: "删除",
+            label: "从参考板移除",
             shortcut: "Delete",
             disabled: contextNodeIds.size === 0,
             danger: true,
@@ -1810,6 +2001,7 @@ export function ReferenceBoardView({
           "--asset-dock-height": dockCollapsed
             ? "36px"
             : `${dockHeight}px`,
+          "--reference-preview-width": `${previewWidth}px`,
         } as CSSProperties
       }
     >
@@ -1950,103 +2142,37 @@ export function ReferenceBoardView({
           </div>
         </section>
 
-        <aside className="reference-preview-panel">
-          <header>
-            <div>
-              <span>ASSET PREVIEW</span>
-              <strong>资源预览</strong>
-            </div>
-            <button
-              type="button"
-              aria-label="下载当前资源"
-              disabled={!activeAsset?.previewUrl}
-              onClick={downloadActiveAsset}
-            >
-              ↓
-            </button>
-          </header>
-          {activeAsset ? (
-            <div className="reference-preview-content">
-              <div className={`reference-preview-stage asset-${activeAsset.kind}`}>
-                {previewTab === "info" ? (
-                  <div className="reference-info-card">
-                    <span>{activeAsset.kind.toUpperCase()}</span>
-                    <strong>{activeAsset.name}</strong>
-                    <p>{activeAsset.path}</p>
-                    <small>{activeAsset.size} · {activeAsset.references} 个引用</small>
-                  </div>
-                ) : activeAsset.previewUrl && activeAsset.kind === "image" ? (
-                  <img src={activeAsset.previewUrl} alt={activeAsset.name} />
-                ) : activeAsset.previewUrl && activeAsset.kind === "video" ? (
-                  <video src={activeAsset.previewUrl} controls />
-                ) : activeAsset.previewUrl && activeAsset.kind === "model" ? (
-                  <ModelPreview
-                    url={activeAsset.previewUrl}
-                    fileName={activeAsset.name}
-                  />
-                ) : activeAsset.previewUrl &&
-                  (activeAsset.kind === "document" ||
-                    activeAsset.kind === "audio" ||
-                    activeAsset.kind === "text") ? (
-                  <DocumentMediaPreview
-                    url={activeAsset.previewUrl}
-                    fileName={activeAsset.name}
-                  />
-                ) : (
-                  <span>{assetGlyph(activeAsset.kind)}</span>
-                )}
-              </div>
-              <div className="reference-preview-tabs">
-                <button
-                  type="button"
-                  className={previewTab === "preview" ? "active" : ""}
-                  onClick={() => setPreviewTab("preview")}
-                >
-                  预览
-                </button>
-                <button
-                  type="button"
-                  className={previewTab === "info" ? "active" : ""}
-                  onClick={() => setPreviewTab("info")}
-                >
-                  信息
-                </button>
-              </div>
-              <div className="reference-preview-meta">
-                <span>{activeAsset.kind.toUpperCase()}</span>
-                <h3>{activeAsset.name}</h3>
-                <p>{activeAsset.path}</p>
-                {activeAsset.sourceAssetId && (
-                  <small>由资源 {activeAsset.sourceAssetId} 裁切生成</small>
-                )}
-                <dl>
-                  <div>
-                    <dt>大小</dt>
-                    <dd>{activeAsset.size}</dd>
-                  </div>
-                  <div>
-                    <dt>引用</dt>
-                    <dd>{activeAsset.references}</dd>
-                  </div>
-                </dl>
-                <button
-                  type="button"
-                  className="button-primary"
-                  disabled={
-                    activeAsset.kind !== "image" || !activeAsset.previewUrl
-                  }
-                  onClick={() => setSplitAsset(activeAsset)}
-                >
-                  ✂ 图片切图
-                </button>
-              </div>
-            </div>
-          ) : (
-            <div className="reference-preview-empty">
-              <span>◎</span>
-              <strong>选择一个资源进行预览</strong>
-            </div>
-          )}
+        <button
+          type="button"
+          className="reference-preview-resizer"
+          aria-label="调整参考板画布与资源预览宽度"
+          title="左右拖动调整画布与预览宽度"
+          onPointerDown={startPreviewResize}
+        >
+          <span aria-hidden="true" />
+        </button>
+
+        <aside className="asset-preview-panel reference-preview-panel">
+          <AssetPreview
+            asset={activeAsset}
+            onDownload={downloadActiveAsset}
+            onSaveText={onSaveText}
+            action={
+              <button
+                type="button"
+                className="button-primary"
+                disabled={
+                  activeAsset?.kind !== "image" ||
+                  !activeAsset?.previewUrl
+                }
+                onClick={() => {
+                  if (activeAsset) setSplitAsset(activeAsset);
+                }}
+              >
+                ✂ 图片切图
+              </button>
+            }
+          />
         </aside>
       </div>
 
@@ -2092,30 +2218,54 @@ export function ReferenceBoardView({
               <button
                 type="button"
                 className={assetSourceFilter === "all" ? "active" : ""}
-                onClick={() => setAssetSourceFilter("all")}
+                onClick={() => {
+                  setAssetSourceFilter("all");
+                  setAssetFilter("all");
+                }}
               >
                 ▾ 📁 Assets <small>{assets.length}</small>
               </button>
               <button
                 type="button"
                 className={assetSourceFilter === "board-import" ? "active" : ""}
-                onClick={() => setAssetSourceFilter("board-import")}
+                onClick={() => {
+                  setAssetSourceFilter("board-import");
+                  setAssetFilter("all");
+                }}
               >
                 　📁 参考板导入
               </button>
               <button
                 type="button"
                 className={assetSourceFilter === "clipboard" ? "active" : ""}
-                onClick={() => setAssetSourceFilter("clipboard")}
+                onClick={() => {
+                  setAssetSourceFilter("clipboard");
+                  setAssetFilter("all");
+                }}
               >
                 　📁 剪贴板
               </button>
               <button
                 type="button"
                 className={assetSourceFilter === "slices" ? "active" : ""}
-                onClick={() => setAssetSourceFilter("slices")}
+                onClick={() => {
+                  setAssetSourceFilter("slices");
+                  setAssetFilter("all");
+                }}
               >
-                　📁 图片切片
+               　📁 图片切片
+              </button>
+              <button
+                type="button"
+                className={
+                  assetSourceFilter === "deliveries" ? "active" : ""
+                }
+                onClick={() => {
+                  setAssetSourceFilter("deliveries");
+                  setAssetFilter("all");
+                }}
+              >
+                　📦 交付包
               </button>
             </aside>
             <div className="reference-dock-assets">

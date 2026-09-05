@@ -3,9 +3,9 @@
 
   # Inscription · INS
 
-  **面向数字人文研究的本地优先知识组织、参考资料管理与数字展示工具**
+  **面向数字人文研究的本地优先知识组织、参考资料管理、开放归档与展示导出工具**
 
-  `Knowledge Node` · `Relationship` · `Local Assets` · `Reference Board` · `Web3D`
+  `Knowledge Node` · `Relationship` · `Local Assets` · `Reference Board` · `INS Archive`
 </div>
 
 ---
@@ -16,10 +16,7 @@ INS 希望把研究过程中分散的节点、关系、图片、文献、音视�
 
 它不是传统文件管理器，也不是单纯的思维导图。INS 以 **Knowledge Node** 为核心：文件目录只负责管理资源，节点负责表达知识对象，关系负责连接知识，参考板负责完成研究素材的比较、拆解和推演。
 
-应用包含两种工作状态：
-
-- **INS Studio**：创建 Node、建立关系、导入资源、整理参考板和管理本机版本。
-- **INS Explorer**：读取同一工作区，以场景、图谱、画廊和 Web3D 方式进行本地展示。
+INS Studio 用于创建 Node、建立关系、导入资源、整理参考板和管理本机版本。展示不再是 Studio 内部的独立模块：INS 会导出稳定的 `.insarchive`，再生成独立、可编辑的 Astro 展示项目。
 
 资源原文件保留在用户设备中，当前版本不要求上传服务器，也不依赖互联网才能完成研究和展示。
 
@@ -34,9 +31,9 @@ INS 希望把研究过程中分散的节点、关系、图片、文献、音视�
 | 参考板 | 可用 | 外部拖入、剪贴板粘贴、资源目录、预览、连线、切图、右键操作 |
 | 三维预览 | 可用 | GLB、GLTF、FBX、OBJ、轨道控制、动画、网格与自动取景 |
 | 文献与媒体 | 可用 | PDF、DOCX、表格、EPUB、音频波形、文本、图片和视频 |
-| Explorer | 基础可用 | 使用工作区场景进行本地全屏展示 |
-| Narrative | 暂时禁用 | 已有场景原型，完整自由编排尚未完成 |
-| 专题 | 暂时禁用 | 已有数据原型，独立内容编选尚未完成 |
+| OCR 文献数字化 | 图片可用 | 内置 PP-OCRv5 mobile 静态模型、Worker 推理、坐标/置信度、人工校勘与文本导出 |
+| 归档 | 可用 | 检查节点、关系、资源、来源与版权；导出 JSON 或 `.insarchive` |
+| Astro 展示 | 可用 | 基于当前归档或已有 `.insarchive` 生成可独立运行的展示项目 |
 
 ## 核心交互
 
@@ -52,6 +49,7 @@ INS 希望把研究过程中分散的节点、关系、图片、文献、音视�
 
 - 可以直接拖入文件或整个目录。
 - 右键支持预览、关联 Node、转到参考板、复制、粘贴副本、重命名、下载和安全删除。
+- 图片资源右键可进入 **OCR 文本识别**；原始 OCR、坐标和置信度保存在 IndexedDB，校勘文本可另存为有来源关系的文字资源。模型和 WASM 运行时已经随 `public/ocr-models/` 与 `public/ocr-runtime/` 静态交付，课堂电脑无需联网下载。
 - 仍被 Node 或参考板引用的资源不会被直接删除。
 - 导入的本机文件通过 IndexedDB 保存，刷新后仍可恢复预览。
 
@@ -92,6 +90,15 @@ npm run dev
 http://localhost:3000
 ```
 
+Windows 下也可以直接双击以下脚本：
+
+```text
+Start-INS.cmd                 Start the localhost development server.
+Build-INS-Electron.cmd        Build the Windows Electron portable release.
+```
+
+两个入口都会打开并保留 PowerShell 窗口，脚本内容使用英文，Node.js 需要 24 或更高版本。
+
 常用检查：
 
 ```bash
@@ -100,9 +107,35 @@ npm run lint
 npm test
 ```
 
+### Electron 桌面试用版
+
+桌面开发模式：
+
+```bash
+npm run desktop:dev
+```
+
+生成 Windows x64 便携版：
+
+```bash
+npm run desktop:dist
+```
+
+便携程序会输出到 `release/`，无需另外启动 localhost，也不要求目标电脑安装 Node.js。
+
+正式发布签名需要将证书配置到打包环境：
+
+```text
+CSC_LINK=证书文件路径（.p12 或 .pfx）
+CSC_KEY_PASSWORD=证书密码
+```
+
+Electron Builder 会自动使用证书完成 Windows SHA-256 签名；没有证书时生成的是内部测试用未签名包。
+
 ## 技术结构
 
 - **React 19 + Vinext + Vite**：应用界面与构建。
+- **Electron**：Windows 桌面窗口与离线便携包。
 - **XYFlow**：Knowledge Graph 与 Reference Board 画布。
 - **Three.js**：三维模型加载与交互预览。
 - **PDF.js / Mammoth.js / SheetJS / epub.js / wavesurfer.js**：文献与媒体预览。
@@ -112,12 +145,21 @@ npm test
 
 ```text
 app/
-├─ page.tsx                       Studio、图谱、资源与 Explorer
+├─ page.tsx                       Studio、图谱、资源与参考板
+├─ archive-view.tsx               归档检查、JSON 与 .insarchive 导出
+├─ exhibition-project.ts          Astro 展示项目生成器
+├─ asset-preview.tsx              资源与参考板共用预览
 ├─ reference-board.tsx            参考板、资源拖入与图片切图
 ├─ application-context-menu.tsx   应用统一右键菜单
 ├─ document-media-preview.tsx     文献、表格、电子书和音频预览
 ├─ model-preview.tsx              Three.js 三维预览
 └─ local-assets.ts                本机资源 Blob 持久化
+
+electron/
+├─ main.cjs                       Electron 主进程与窗口安全策略
+├─ preload.cjs                    受限桌面环境桥接
+├─ renderer/                      离线桌面渲染入口
+└─ vite.desktop.config.ts         桌面界面构建配置
 ```
 
 ## 分支规划
@@ -125,14 +167,16 @@ app/
 - **`main`**：当前浏览器版稳定基线。
 - **`desktop`**：Electron 桌面版开发线，从 `main` 复用界面与核心数据模型。
 
-Desktop 版将优先解决真实文件路径、工作区落盘、原生目录选择、安装包和应用图标，详细方案见 [Desktop 桌面版规划](./docs/Desktop桌面版规划.md)。
+Desktop 版已经具备第一版 Windows 便携包；后续将继续完善真实文件路径、原生目录选择和工作区落盘，详细方案见 [Desktop 桌面版规划](./docs/Desktop桌面版规划.md)。
 
 ## 文档
 
 - [当前功能说明](./docs/当前功能说明.md)
 - [未完成功能说明](./docs/未完成功能说明.md)
 - [Desktop 桌面版规划](./docs/Desktop桌面版规划.md)
+- [INS 归档格式](./docs/INS归档格式v1.md)
+- [INS Astro 展示工作流](./docs/INS-Astro展示工作流.md)
 
 ## 当前阶段
 
-项目仍处于功能原型与基础工作流验证阶段。Node、图谱、资源和参考板是当前重点；Narrative 与专题入口会在数据模型和编辑体验达到可用标准后重新开放。
+项目仍处于功能原型与基础工作流验证阶段。Node、图谱、资源、参考板与归档是当前重点；展示发布由独立 Astro 项目承担。

@@ -34,7 +34,8 @@ test("server-renders the INS Studio shell", async () => {
   assert.match(html, /<title>Inscription · 数字人文知识平台<\/title>/i);
   assert.match(html, /Inscription/);
   assert.match(html, /数字人文知识平台/);
-  assert.match(html, /Explorer/);
+  assert.match(html, /归档/);
+  assert.doesNotMatch(html, />Explorer</);
   assert.doesNotMatch(html, /codex-preview/);
   assert.doesNotMatch(html, /Your site is taking shape/);
 });
@@ -47,7 +48,7 @@ test("starter preview is fully removed", async () => {
   ]);
 
   await assert.rejects(access(new URL("../app/_sites-preview", import.meta.url)));
-  assert.match(page, /function ExplorerView/);
+  assert.match(page, /ArchiveView/);
   assert.match(page, /拖入文件或整个目录/);
   assert.match(page, /创建 Node/);
   assert.match(layout, /lang="zh-CN"/);
@@ -56,9 +57,23 @@ test("starter preview is fully removed", async () => {
   assert.doesNotMatch(layout, /Starter Project/);
 });
 
+test("localhost HMR does not recursively forward errors before connecting", async () => {
+  const viteConfig = await readFile(
+    new URL("../vite.config.ts", import.meta.url),
+    "utf8",
+  );
+
+  assert.match(viteConfig, /forwardConsole: false/);
+  assert.match(viteConfig, /send was called before connect/);
+});
+
 test("core workspace interactions are wired", async () => {
   const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
 
+  assert.match(
+    page,
+    /id: "assets", label: "资源", shortcut: "1"[\s\S]*id: "boards", label: "参考板", shortcut: "2"[\s\S]*id: "nodes", label: "节点", shortcut: "3"[\s\S]*id: "graph", label: "图谱", shortcut: "4"[\s\S]*id: "map", label: "地图", shortcut: "5"/,
+  );
   assert.match(page, /createWorkspace/);
   assert.match(page, /switchWorkspace/);
   assert.match(page, /ReactFlowCanvas/);
@@ -66,18 +81,242 @@ test("core workspace interactions are wired", async () => {
   assert.match(page, /deleteSelectedNodes/);
   assert.match(page, /application\/x-ins-asset/);
   assert.match(page, /createConnectedNode/);
-  assert.match(page, /createTopic/);
   assert.match(page, /inscription-workspaces-v1/);
   assert.match(page, /data-node-id=/);
   assert.match(
     page,
-    /id: "narrative", label: "Narrative", shortcut: "5", disabled: true/,
+    /id: "archive", label: "归档", shortcut: "6"/,
   );
-  assert.match(
-    page,
-    /id: "topics", label: "专题", shortcut: "6", disabled: true/,
-  );
-  assert.match(page, /disabled=\{item\.disabled\}/);
+  assert.match(page, /id: "ocr", label: "OCR", shortcut: "7"/);
+  assert.match(page, /id: "biblio", label: "计量", shortcut: "8"/);
+  assert.match(page, /hiddenNodeKinds/);
+  assert.match(page, /LayerVisibilityIcon/);
+  assert.match(page, /node-type-visibility/);
+  assert.match(page, /在图谱中隐藏/);
+  assert.doesNotMatch(page, /label: "Narrative"/);
+  assert.doesNotMatch(page, /label: "专题"/);
+});
+
+test("map view places knowledge nodes on MapLibre with deck.gl", async () => {
+  const [page, map, geo, io, styles, packageJson, viteConfig] = await Promise.all([
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/studio-map.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/geo.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/map-io.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+    readFile(new URL("../package.json", import.meta.url), "utf8"),
+    readFile(new URL("../vite.config.ts", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(page, /id: "map", label: "地图"/);
+  assert.match(page, /StudioMapCanvas/);
+  assert.match(page, /section === "map"/);
+  assert.match(page, /stampSampleNode/);
+  assert.match(page, /longitude: 113\.54072/);
+  assert.match(page, /latitude: 22\.19756/);
+  assert.match(page, /妈阁庙/);
+  assert.match(page, /议事亭前地/);
+  assert.match(page, /澳门历史城区/);
+  assert.match(page, /HISTORIC_CENTRE_RING/);
+  assert.match(page, /yearFrom/);
+  assert.match(page, /updateSelectedNodeGeo/);
+  assert.match(page, /在地图中查看/);
+  assert.match(page, /createMapPlaces/);
+  assert.match(page, /onCreatePlaces/);
+  assert.doesNotMatch(page, /from "\.\/studio-map"/);
+  assert.match(geo, /export type StudioMapGeo/);
+  assert.match(geo, /polygon\?:/);
+  assert.match(geo, /export function hasMapPolygon/);
+  assert.match(geo, /export function yearsOverlap/);
+  assert.match(geo, /export function geoFromRing/);
+  assert.match(map, /react-map-gl\/maplibre/);
+  assert.match(map, /ins-map-heat/);
+  assert.match(map, /TripsLayer/);
+  assert.match(map, /PolygonLayer/);
+  assert.match(map, /时间轴/);
+  assert.match(map, /四种印记/);
+  assert.match(map, /画点/);
+  assert.match(map, /底图标签/);
+  assert.match(map, /导出 GeoJSON/);
+  assert.match(map, /fitBounds/);
+  assert.match(io, /export function parseCsvPlaces/);
+  assert.match(io, /export function parseGeoJsonPlaces/);
+  assert.match(io, /FeatureCollection/);
+  assert.match(styles, /\.studio-map-timeline/);
+  assert.match(styles, /\.studio-map-inscriptions/);
+  assert.match(styles, /\.studio-map-tools/);
+  assert.match(viteConfig, /optimizeDeps: vosviewerOptimizeDeps\(\)/);
+  assert.match(viteConfig, /javaRandomEsmPlugin/);
+  assert.match(viteConfig, /vosviewerReact19Plugin/);
+  assert.match(styles, /\.studio-map-timeline/);
+  assert.match(styles, /\.studio-map-inscriptions/);
+  assert.match(packageJson, /"maplibre-gl"/);
+  assert.match(packageJson, /"@deck.gl\/aggregation-layers"/);
+  assert.match(packageJson, /"@deck.gl\/geo-layers"/);
+  assert.match(packageJson, /"@deck.gl\/extensions"/);
+  assert.match(packageJson, /"@deck.gl\/mesh-layers"/);
+  assert.match(packageJson, /"react-map-gl"/);
+});
+
+test("bibliometrics preview renders a local VOSviewer network without leaving the machine", async () => {
+  const [page, trial, local, sample, openalex, imported, stats, network, styles, viteConfig, desktopConfig, plugin, packageJson, vosConfig, i18n] =
+    await Promise.all([
+      readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+      readFile(new URL("../app/bibliometrics-trial.tsx", import.meta.url), "utf8"),
+      readFile(new URL("../app/bibliometrics-vos-local.tsx", import.meta.url), "utf8"),
+      readFile(new URL("../app/vos-sample-network.ts", import.meta.url), "utf8"),
+      readFile(new URL("../app/biblio-openalex.ts", import.meta.url), "utf8"),
+      readFile(new URL("../app/biblio-import.ts", import.meta.url), "utf8"),
+      readFile(new URL("../app/biblio-stats.ts", import.meta.url), "utf8"),
+      readFile(new URL("../app/biblio-network.ts", import.meta.url), "utf8"),
+      readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+      readFile(new URL("../vite.config.ts", import.meta.url), "utf8"),
+      readFile(new URL("../electron/vite.desktop.config.ts", import.meta.url), "utf8"),
+      readFile(new URL("../build/java-random-esm-plugin.ts", import.meta.url), "utf8"),
+      readFile(new URL("../package.json", import.meta.url), "utf8"),
+      readFile(new URL("../app/vos-online-config.ts", import.meta.url), "utf8"),
+      readFile(new URL("../app/vos-ui-i18n.ts", import.meta.url), "utf8"),
+    ]);
+
+  assert.match(page, /id: "biblio", label: "计量", shortcut: "8"/);
+  assert.match(page, /StudioBiblioCanvas/);
+  assert.match(page, /section === "biblio"/);
+  assert.match(page, /biblioCorpus/);
+  assert.match(page, /writeBiblioRecords/);
+  assert.match(page, /kind: "Document"/);
+  assert.match(page, /kind: "Person"/);
+  assert.match(page, /kind: "Author"/);
+  assert.match(page, /文献作者/);
+  assert.match(page, /一键排列/);
+  assert.match(page, /biblio-author-chip/);
+  assert.match(page, /biblio-paper-row/);
+  assert.match(page, /matchingKnowledgeIds/);
+  assert.match(page, /biblio-edge/);
+  assert.doesNotMatch(page, /graphShowBiblio/);
+  assert.doesNotMatch(page, /layoutBiblioCluster/);
+  assert.doesNotMatch(page, /slice\(0, 420\)/);
+  assert.match(trial, /LocalVosViewer/);
+  assert.match(trial, /本机检索/);
+  assert.match(trial, /检索词/);
+  assert.match(trial, /OpenAlex Key/);
+  assert.match(trial, /导入 CSV \/ RIS \/ BibTeX/);
+  assert.match(trial, /写入知识库/);
+  assert.match(trial, /一键排列/);
+  assert.doesNotMatch(trial, /先勾选/);
+  assert.doesNotMatch(trial, /BIBLIO_GRAPH_WRITE_LIMIT/);
+  assert.match(trial, /年度发文/);
+  assert.match(trial, /高产作者/);
+  assert.match(trial, /核心期刊/);
+  assert.match(trial, /高被引/);
+  assert.match(trial, /词频/);
+  assert.doesNotMatch(trial, /iframe/);
+  assert.doesNotMatch(trial, /HOSTED_VOS_DEMO/);
+  assert.doesNotMatch(trial, /app\.vosviewer\.com\/\?json=/);
+  assert.doesNotMatch(trial, /biblioshiny/i);
+  assert.match(openalex, /https:\/\/api\.openalex\.org\/works/);
+  assert.match(openalex, /inscription-openalex-key-v1/);
+  assert.match(openalex, /maxPages/);
+  assert.match(openalex, /BIBLIO_CORPUS_LIMIT/);
+  assert.doesNotMatch(trial, /检索走 OpenAlex/);
+  assert.match(trial, /<h2>\{title\}<\/h2>/);
+  assert.match(imported, /parseRis/);
+  assert.match(imported, /parseBibtex/);
+  assert.match(imported, /parseCsv/);
+  assert.match(stats, /yearlyCounts/);
+  assert.match(stats, /topAuthors/);
+  assert.match(stats, /coreVenues/);
+  assert.match(stats, /highlyCited/);
+  assert.match(stats, /termFrequency/);
+  assert.match(network, /关键词共现/);
+  assert.match(network, /文献耦合/);
+  assert.match(network, /共被引/);
+  assert.match(network, /引文网/);
+  assert.match(network, /couplingNetwork/);
+  assert.match(network, /cocitationNetwork/);
+  assert.match(network, /citationNetwork/);
+  assert.match(network, /VOS_NETWORK_KINDS/);
+  assert.match(trial, /主题演化/);
+  assert.match(trial, /VOS_NETWORK_KINDS/);
+  assert.match(trial, /耦合 \/ 共被引 \/ 引文网/);
+  assert.match(trial, /thematicEvolution/);
+  assert.match(trial, /BiblioThemePanel/);
+  assert.match(imported, /REFERENCES_HEADER/);
+  assert.match(imported, /parsed\.tag === "CR"/);
+  assert.match(imported, /splitReferencedWorks/);
+  assert.match(imported, /fields\.references \|\| fields\.cited \|\| fields\.bibliography/);
+  assert.match(local, /from "vosviewer-online"/);
+  assert.match(local, /react-vos-compat/);
+  assert.match(local, /LOCAL_VOS_NETWORK/);
+  assert.match(local, /VOS_FULL_PARAMETERS/);
+  assert.match(local, /中文/);
+  assert.match(local, /English/);
+  assert.match(local, /聚类着色/);
+  assert.match(local, /年份着色/);
+  assert.match(local, /完整界面/);
+  assert.match(local, /openVosControlPanel/);
+  assert.doesNotMatch(local, /simple_ui:\s*true/);
+  assert.match(vosConfig, /simple_ui: false/);
+  assert.match(vosConfig, /VOS_TERMINOLOGY/);
+  assert.doesNotMatch(network, /simple_ui:\s*true/);
+  assert.match(network, /VOS_FULL_PARAMETERS/);
+  assert.match(sample, /VOS_FULL_PARAMETERS/);
+  assert.doesNotMatch(sample, /simple_ui:\s*true/);
+  assert.match(i18n, /Show control panel/);
+  assert.match(i18n, /显示控制面板/);
+  assert.match(i18n, /Update layout/);
+  assert.match(i18n, /更新布局/);
+  assert.match(styles, /\.studio-biblio-vos-bar/);
+  assert.match(styles, /\.studio-biblio-vos-switch/);
+  assert.match(sample, /LOCAL_VOS_NETWORK/);
+  assert.match(sample, /圣保禄学院/);
+  assert.doesNotMatch(sample, /HOSTED_VOS_DEMO/);
+  assert.match(styles, /\.studio-biblio-vos/);
+  assert.match(styles, /\.studio-biblio-search/);
+  assert.match(styles, /\.studio-biblio-search-actions \.button-primary \{[\s\S]*?background: var\(--ink\)/);
+  assert.match(styles, /\.studio-biblio-stat h2/);
+  assert.doesNotMatch(styles, /studio-biblio-frame/);
+  assert.match(styles, /\.studio-biblio-net-toolbar/);
+  assert.match(styles, /\.studio-biblio-strategy/);
+  assert.match(styles, /\.studio-biblio-sankey/);
+  assert.match(viteConfig, /javaRandomEsmPlugin/);
+  assert.match(viteConfig, /vosviewerReact19Plugin/);
+  assert.match(desktopConfig, /javaRandomEsmPlugin/);
+  assert.match(desktopConfig, /vosviewerReact19Plugin/);
+  assert.match(plugin, /export default class JavaRandom/);
+  assert.match(plugin, /SECRET_INTERNALS_DO_NOT_USE_OR_YOU_WILL_BE_FIRED/);
+  assert.match(plugin, /__insJsx/);
+  assert.match(plugin, /export function vosviewerOptimizeDeps/);
+  assert.match(plugin, /"@deck.gl\/extensions"/);
+  assert.match(plugin, /"@deck.gl\/mesh-layers"/);
+  assert.match(packageJson, /"vosviewer-online"/);
+});
+
+test("bibliometric coupling, cocitation, citation, and theme evolution stay on device", async () => {
+  const [network, themes, panel, imported, trial] = await Promise.all([
+    readFile(new URL("../app/biblio-network.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/biblio-themes.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/biblio-theme-panel.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/biblio-import.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/bibliometrics-trial.tsx", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(network, /export function couplingNetwork/);
+  assert.match(network, /export function cocitationNetwork/);
+  assert.match(network, /export function citationNetwork/);
+  assert.match(themes, /export function thematicEvolution/);
+  assert.match(themes, /inclusionIndex/);
+  assert.match(themes, /centrality/);
+  assert.match(themes, /density/);
+  assert.match(themes, /motor/);
+  assert.match(panel, /战略坐标图/);
+  assert.match(panel, /在网络图中打开此切片/);
+  assert.match(panel, /inclusion/);
+  assert.match(imported, /REFERENCES_HEADER/);
+  assert.match(trial, /setNetworkKind/);
+  assert.doesNotMatch(trial, /iframe/);
+  assert.doesNotMatch(trial, /biblioshiny/i);
+  assert.doesNotMatch(themes, /app\.vosviewer\.com\/\?json=/);
+  assert.doesNotMatch(panel, /iframe/);
 });
 
 test("node dragging stays local to the canvas until drop", async () => {
@@ -89,11 +328,27 @@ test("node dragging stays local to the canvas until drop", async () => {
   assert.doesNotMatch(page, /ResizeObserver loop completed/);
 });
 
+test("graph relation labels can be edited directly from an edge", async () => {
+  const page = await readFile(new URL("../app/page.tsx", import.meta.url), "utf8");
+
+  assert.match(page, /EditableRelationEdge/);
+  assert.match(page, /EdgeLabelRenderer/);
+  assert.match(page, /beginRelationEdit/);
+  assert.match(page, /commitRelationLabel/);
+  assert.match(page, /edgeTypes=\{editableRelationEdgeTypes\}/);
+  assert.match(page, /onEdgeClick=/);
+  assert.match(page, /aria-label="编辑关系文字"/);
+  assert.match(page, /event\.key === "Enter"/);
+  assert.match(page, /event\.key === "Escape"/);
+});
+
 test("reference board workflow is wired", async () => {
-  const [page, board, localAssets] = await Promise.all([
+  const [page, board, localAssets, styles, assetPreview] = await Promise.all([
     readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/reference-board.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/local-assets.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+    readFile(new URL("../app/asset-preview.tsx", import.meta.url), "utf8"),
   ]);
 
   assert.match(page, /label: "参考板"/);
@@ -109,10 +364,79 @@ test("reference board workflow is wired", async () => {
   assert.match(board, /requestAnimationFrame\(paintPendingHeight\)/);
   assert.match(board, /setPointerCapture\(pointerId\)/);
   assert.match(board, /setDockHeight\(pendingHeight\)/);
+  assert.match(board, /startPreviewResize/);
+  assert.match(board, /--reference-preview-width/);
+  assert.match(board, /dataset\.previewResizing/);
+  assert.match(board, /onRenameAsset/);
+  assert.match(board, /onCreateDeliveryPackage/);
+  assert.match(board, /从参考板移除/);
+  assert.match(board, /REFERENCE_PREVIEW_DEFAULT_WIDTH = 420/);
+  assert.match(board, /LEGACY_REFERENCE_PREVIEW_DEFAULT_WIDTH = 310/);
+  assert.match(page, /<AssetPreview/);
+  assert.match(board, /<AssetPreview/);
+  assert.match(assetPreview, /asset-preview-stage/);
+  assert.match(styles, /aspect-ratio: 4 \/ 3/);
   assert.doesNotMatch(
     board,
     /const onMove = \(moveEvent: PointerEvent\) => \{\s*setDockHeight\(/,
   );
+});
+
+test("assets support managed source files and delivery packages", async () => {
+  const [page, workspaceFiles] = await Promise.all([
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/workspace-files.ts", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(page, /connectWorkspaceDirectory/);
+  assert.match(page, /renameWorkspaceAssetFile/);
+  assert.match(page, /createDeliveryPackage/);
+  assert.match(page, /deliveryPackages/);
+  assert.match(page, /Deliveries\/\$\{packageName\}/);
+  assert.match(page, /ArchiveView/);
+  assert.match(workspaceFiles, /showDirectoryPicker/);
+  assert.match(workspaceFiles, /createWorkspaceDeliveryDirectories/);
+  assert.match(workspaceFiles, /"Assets"/);
+  assert.match(workspaceFiles, /"Deliveries"/);
+  assert.match(workspaceFiles, /"INS_delivery\.json"/);
+});
+
+test("local file reveal and global edit shortcuts are wired", async () => {
+  const [page, board, workspaceFiles, desktop, preload, main] = await Promise.all([
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/reference-board.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/workspace-files.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/desktop-bridge.ts", import.meta.url), "utf8"),
+    readFile(new URL("../electron/preload.cjs", import.meta.url), "utf8"),
+    readFile(new URL("../electron/main.cjs", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(page, /浏览到本地文件/);
+  assert.match(page, /revealAsset/);
+  assert.match(page, /copySelectedNodes/);
+  assert.match(page, /pasteGraphClipboard/);
+  assert.match(page, /renameSelectedNode/);
+  assert.match(page, /isTypingTarget/);
+  assert.match(page, /revealNodeLocalFile/);
+  assert.match(page, /section === "graph" \|\| section === "boards"/);
+  assert.match(page, /section === "nodes"/);
+  assert.match(page, /section !== "graph" && section !== "nodes"/);
+  assert.match(board, /浏览到本地文件/);
+  assert.match(board, /key === "f2"/);
+  assert.match(board, /onRevealAsset/);
+  assert.match(workspaceFiles, /revealLocalAsset/);
+  assert.match(workspaceFiles, /showOpenFilePicker/);
+  assert.match(workspaceFiles, /startIn/);
+  assert.match(workspaceFiles, /via: "explorer" \| "picker"/);
+  assert.match(page, /已打开「\$\{asset\.name\}」的本机位置/);
+  assert.doesNotMatch(
+    page,
+    /当前浏览器无法打开资源管理器，请使用桌面版浏览本机文件/,
+  );
+  assert.match(workspaceFiles, /inscription-workspace-roots-v1/);
+  assert.match(desktop, /chooseDirectory/);
+  assert.match(preload, /ins:reveal-in-folder/);
+  assert.match(main, /shell.showItemInFolder/);
 });
 
 test("graph supports Q alignment and C comment frames", async () => {
@@ -123,17 +447,20 @@ test("graph supports Q alignment and C comment frames", async () => {
   assert.match(page, /graphAnnotations/);
   assert.match(page, /Q 对齐/);
   assert.match(page, /C 备注/);
+  assert.match(page, /<kbd>Ctrl\+C<\/kbd>/);
+  assert.match(page, /<kbd>Ctrl\+V<\/kbd>/);
+  assert.match(page, /<kbd>F2<\/kbd>/);
 });
 
 test("local assets use a real Three.js model preview", async () => {
-  const [page, viewer, localAssets, packageJson] = await Promise.all([
-    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+  const [assetPreview, viewer, localAssets, packageJson] = await Promise.all([
+    readFile(new URL("../app/asset-preview.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/model-preview.tsx", import.meta.url), "utf8"),
     readFile(new URL("../app/local-assets.ts", import.meta.url), "utf8"),
     readFile(new URL("../package.json", import.meta.url), "utf8"),
   ]);
 
-  assert.match(page, /ModelPreview/);
+  assert.match(assetPreview, /ModelPreview/);
   assert.match(viewer, /GLTFLoader/);
   assert.match(viewer, /FBXLoader/);
   assert.match(viewer, /OBJLoader/);
@@ -144,10 +471,9 @@ test("local assets use a real Three.js model preview", async () => {
 });
 
 test("documents, spreadsheets, ebooks, and audio use real local preview engines", async () => {
-  const [viewer, page, board, packageJson] = await Promise.all([
+  const [viewer, assetPreview, packageJson] = await Promise.all([
     readFile(new URL("../app/document-media-preview.tsx", import.meta.url), "utf8"),
-    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
-    readFile(new URL("../app/reference-board.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/asset-preview.tsx", import.meta.url), "utf8"),
     readFile(new URL("../package.json", import.meta.url), "utf8"),
   ]);
 
@@ -159,10 +485,141 @@ test("documents, spreadsheets, ebooks, and audio use real local preview engines"
   assert.match(viewer, /PdfPreview/);
   assert.match(viewer, /SpreadsheetPreview/);
   assert.match(viewer, /AudioPreview/);
-  assert.match(page, /DocumentMediaPreview/);
-  assert.match(board, /DocumentMediaPreview/);
+  assert.match(viewer, /TextDocumentEditor/);
+  assert.match(assetPreview, /DocumentMediaPreview/);
   assert.match(packageJson, /"pdfjs-dist"/);
   assert.match(packageJson, /"wavesurfer\.js"/);
+});
+
+test("text assets can be created and edited as notes or structured data", async () => {
+  const [page, editor, helpers, board, preview] = await Promise.all([
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/text-document-editor.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/text-documents.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/reference-board.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/asset-preview.tsx", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(page, /createBlankTextAsset\("md"\)/);
+  assert.match(page, /createBlankTextAsset\("json"\)/);
+  assert.match(page, /createBlankTextAsset\("txt"\)/);
+  assert.match(page, /saveTextAsset/);
+  assert.match(page, /onSaveText=\{saveTextAsset\}/);
+  assert.match(page, /新建 Markdown 笔记/);
+  assert.match(helpers, /markdownNoteTemplate/);
+  assert.match(helpers, /jsonDataTemplate/);
+  assert.match(helpers, /renderMarkdownToHtml/);
+  assert.match(helpers, /parseJsonDocument/);
+  assert.match(helpers, /EDITABLE_TEXT_EXTENSIONS/);
+  assert.match(editor, /aria-label=\{`\$\{role\}编辑器`\}/);
+  assert.match(editor, /persist\("auto", draft\)/);
+  assert.match(editor, /persist\("manual"/);
+  assert.match(editor, /格式化/);
+  assert.match(editor, /JsonTree/);
+  assert.match(board, /onSaveText/);
+  assert.match(board, /\/\\\.\(md\|txt\|json\|xml\|html\|css\|js\|ts\)\$\/i/);
+  assert.match(preview, /isEditableTextFile/);
+  assert.match(preview, /可编辑本机文本/);
+});
+
+test("OCR keeps local raw geometry separate from human-corrected text", async () => {
+  const [page, panel, service, storage, types, packageJson] = await Promise.all([
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/ocr-panel.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/ocr/ocr-service.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/ocr/ocr-storage.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/ocr/ocr-types.ts", import.meta.url), "utf8"),
+    readFile(new URL("../package.json", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(page, /OCR 文本识别/);
+  assert.match(page, /<OcrPanel/);
+  assert.match(panel, /人工校勘文本/);
+  assert.match(panel, /保存为校勘文本资源/);
+  assert.match(panel, /导出 Markdown/);
+  assert.match(service, /worker: true/);
+  assert.match(service, /numThreads: 2/);
+  assert.match(service, /PP-OCRv5/);
+  assert.match(service, /textDetectionModelAsset/);
+  assert.match(service, /textRecognitionModelAsset/);
+  assert.match(service, /createLocalWasmPaths/);
+  assert.match(service, /wasmPaths: wasmPaths/);
+  assert.match(service, /URL\.createObjectURL/);
+  assert.match(service, /\/ocr-models\//);
+  assert.match(service, /\/ocr-runtime\//);
+  assert.doesNotMatch(service, /https:\/\//);
+  await access(new URL("../public/ocr-models/PP-OCRv5_mobile_det_onnx_infer.tar", import.meta.url));
+  await access(new URL("../public/ocr-models/PP-OCRv5_mobile_rec_onnx_infer.tar", import.meta.url));
+  await access(new URL("../public/ocr-runtime/ort-wasm-simd-threaded.jsep.mjs", import.meta.url));
+  await access(new URL("../public/ocr-runtime/ort-wasm-simd-threaded.jsep.wasm", import.meta.url));
+  assert.match(storage, /indexedDB\.open/);
+  assert.match(types, /rawText/);
+  assert.match(types, /correctedText/);
+  assert.match(types, /polygon/);
+  assert.match(packageJson, /"@paddleocr\/paddleocr-js"/);
+});
+
+test("INS Archive exports five resource kinds with validation and checksums", async () => {
+  const [page, archive, board, packageJson, archiveSpec] = await Promise.all([
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/archive-view.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/reference-board.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../package.json", import.meta.url), "utf8"),
+    readFile(new URL("../docs/INS归档格式v1.md", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(page, /label: "归档"/);
+  assert.match(page, /<ArchiveView/);
+  assert.match(archive, /Text · Image · Model · Video · Audio/);
+  assert.match(archive, /audio: \{ code: "A", folder: "audio" \}/);
+  assert.match(archive, /checksums\.sha256/);
+  assert.match(archive, /SHA-256/);
+  assert.match(archive, /generateAsync/);
+  assert.match(archive, /本地源文件不可用/);
+  assert.match(board, /duration\?: number/);
+  assert.match(board, /sampleRate\?: number/);
+  assert.match(packageJson, /"jszip"/);
+  assert.match(archiveSpec, /Text \/ Image \/ Model \/ Video \/ Audio/);
+});
+
+test("INS Archive creates Astro exhibitions from current or existing archives", async () => {
+  const [archive, exhibition, styles, workflow] = await Promise.all([
+    readFile(new URL("../app/archive-view.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/exhibition-project.ts", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+    readFile(new URL("../docs/INS-Astro展示工作流.md", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(archive, /基于当前归档创建/);
+  assert.match(archive, /选择已有 \.insarchive/);
+  assert.match(archive, /JSZip\.loadAsync\(file\)/);
+  assert.match(archive, /createExhibitionProject/);
+  assert.match(exhibition, /"collection" \| "research" \| "spatial"/);
+  assert.match(exhibition, /astro: "\^7\.2\.9"/);
+  assert.match(exhibition, /@google\/model-viewer/);
+  assert.match(exhibition, /src\/pages\/nodes\/\[id\]\.astro/);
+  assert.match(exhibition, /src\/pages\/assets\/\[id\]\.astro/);
+  assert.match(exhibition, /sourceArchiveChecksum/);
+  assert.match(exhibition, /Start-Localhost\.ps1/);
+  assert.match(exhibition, /Build-Release\.ps1/);
+  assert.match(styles, /\.archive-template-grid/);
+  assert.match(workflow, /INS 工作区 → 归档检查 → \.insarchive → Astro 展示项目/);
+});
+
+test("resource gallery and preview use a flush resizable split layout", async () => {
+  const [page, styles] = await Promise.all([
+    readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+    readFile(new URL("../app/globals.css", import.meta.url), "utf8"),
+  ]);
+
+  assert.match(page, /section !== "assets"/);
+  assert.match(page, /className="asset-panel-resizer"/);
+  assert.match(page, /role="separator"/);
+  assert.match(page, /setPointerCapture\(event\.pointerId\)/);
+  assert.match(page, /requestAnimationFrame/);
+  assert.match(page, /inscription-asset-preview-width-v1/);
+  assert.match(styles, /--asset-preview-width/);
+  assert.match(styles, /\.asset-browser\.is-resizing/);
 });
 
 test("resources and reference boards use application context menus", async () => {
@@ -184,4 +641,34 @@ test("resources and reference boards use application context menus", async () =>
   assert.match(board, /disconnectBoardSelection/);
   assert.match(contextMenu, /createPortal/);
   assert.match(contextMenu, /role="menu"/);
+});
+
+test("Electron desktop packaging is wired for an offline Windows build", async () => {
+  const [packageJson, desktopPackage, mainProcess, renderer, page, startScript, buildScript] =
+    await Promise.all([
+      readFile(new URL("../package.json", import.meta.url), "utf8"),
+      readFile(new URL("../electron/package.json", import.meta.url), "utf8"),
+      readFile(new URL("../electron/main.cjs", import.meta.url), "utf8"),
+      readFile(
+        new URL("../electron/renderer/main.tsx", import.meta.url),
+        "utf8",
+      ),
+      readFile(new URL("../app/page.tsx", import.meta.url), "utf8"),
+      readFile(new URL("../Start-INS.cmd", import.meta.url), "utf8"),
+      readFile(new URL("../Build-INS-Electron.cmd", import.meta.url), "utf8"),
+    ]);
+
+  assert.match(packageJson, /"desktop:dist"/);
+  assert.match(packageJson, /electron-builder/);
+  assert.match(desktopPackage, /"target": "portable"/);
+  assert.match(desktopPackage, /ins-logo\.png/);
+  assert.match(mainProcess, /contextIsolation: true/);
+  assert.match(mainProcess, /nodeIntegration: false/);
+  assert.match(mainProcess, /process\.resourcesPath/);
+  assert.match(mainProcess, /loadFile/);
+  assert.match(renderer, /<Home \/>/);
+  assert.match(page, /window\.location\.protocol === "file:"/);
+  assert.match(page, /\.\/ins-logo\.png/);
+  assert.match(startScript, /scripts\\start-localhost\.cmd/);
+  assert.match(buildScript, /scripts\\build-release\.cmd/);
 });
