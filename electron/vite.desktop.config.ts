@@ -21,6 +21,11 @@ export default defineConfig({
   root: rendererRoot,
   publicDir: publicDirectory,
   base: "./",
+  envDir: fileURLToPath(new URL("..", import.meta.url)),
+  envPrefix: ["VITE_", "NEXT_PUBLIC_"],
+  define: {
+    __INS_CLEAN_START__: JSON.stringify(true),
+  },
   plugins: [javaRandomEsmPlugin(), vosviewerReact19Plugin(), react()],
   resolve: {
     alias: {

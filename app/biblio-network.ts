@@ -8,6 +8,7 @@ import {
   type VosNetworkPayload,
 } from "./vos-online-config";
 import { LOCAL_VOS_NETWORK } from "./vos-sample-network";
+import { INS_CLEAN_START } from "./release-mode";
 
 export type { VosNetworkPayload };
 
@@ -482,7 +483,19 @@ export function networkFromCorpus(
     if (fallback) return { data: fallback, fromCorpus: true, kind };
   }
   return {
-    data: LOCAL_VOS_NETWORK,
+    data: INS_CLEAN_START
+      ? {
+          network: { items: [], links: [] },
+          config: {
+            parameters: { ...VOS_FULL_PARAMETERS },
+            terminology: VOS_TERMINOLOGY.zh,
+          },
+          info: {
+            title: "暂无网络",
+            description: "检索或导入题录后，会在这里生成本机网络。",
+          },
+        }
+      : LOCAL_VOS_NETWORK,
     fromCorpus: false,
     kind,
     missing: records.length === 0 ? undefined : MISSING[kind],

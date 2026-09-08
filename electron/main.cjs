@@ -1,8 +1,8 @@
 /* eslint-disable @typescript-eslint/no-require-imports */
 const { app, BrowserWindow, dialog, ipcMain, shell } = require("electron");
 const fs = require("node:fs/promises");
+const http = require("node:http");
 const path = require("node:path");
-
 const isDevelopment = !app.isPackaged;
 const developmentUrl =
   process.env.INS_DESKTOP_DEV_URL || "http://localhost:3000";
@@ -15,6 +15,73 @@ if (!app.requestSingleInstanceLock()) {
 }
 
 let mainWindow = null;
+/** Packaged UI is served over localhost so MapLibre can load online basemap tiles. */
+let packagedAppOrigin = null;
+
+const MIME_TYPES = {
+  ".css": "text/css; charset=utf-8",
+  ".html": "text/html; charset=utf-8",
+  ".ico": "image/x-icon",
+  ".js": "text/javascript; charset=utf-8",
+  ".json": "application/json; charset=utf-8",
+  ".mjs": "text/javascript; charset=utf-8",
+  ".png": "image/png",
+  ".svg": "image/svg+xml",
+  ".txt": "text/plain; charset=utf-8",
+  ".wasm": "application/wasm",
+  ".webmanifest": "application/manifest+json",
+  ".woff": "font/woff",
+  ".woff2": "font/woff2",
+};
+
+function contentTypeFor(filePath) {
+  return MIME_TYPES[path.extname(filePath).toLowerCase()] || "application/octet-stream";
+}
+
+function startPackagedStaticServer(rootDirectory) {
+  const rootResolved = path.resolve(rootDirectory);
+  const rootPrefix = rootResolved.endsWith(path.sep)
+    ? rootResolved
+    : `${rootResolved}${path.sep}`;
+
+  const server = http.createServer(async (request, response) => {
+    try {
+      const requestUrl = new URL(request.url || "/", "http://127.0.0.1");
+      let relativePath = decodeURIComponent(requestUrl.pathname);
+      if (relativePath === "/" || relativePath === "") {
+        relativePath = "/index.html";
+      }
+      const fullPath = path.resolve(rootResolved, `.${relativePath}`);
+      if (fullPath !== rootResolved && !fullPath.startsWith(rootPrefix)) {
+        response.writeHead(403).end("Forbidden");
+        return;
+      }
+      const data = await fs.readFile(fullPath);
+      response.writeHead(200, {
+        "Content-Type": contentTypeFor(fullPath),
+        "Cache-Control": "no-cache",
+      });
+      response.end(data);
+    } catch {
+      response.writeHead(404).end("Not Found");
+    }
+  });
+
+  return new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      if (!address || typeof address === "string") {
+        reject(new Error("Failed to bind packaged static server"));
+        return;
+      }
+      resolve({
+        server,
+        origin: `http://127.0.0.1:${address.port}`,
+      });
+    });
+  });
+}
 
 function resolveInsideWorkspace(root, relativePath) {
   const rootResolved = path.resolve(String(root));
@@ -69,6 +136,9 @@ function createWindow() {
   });
 
   mainWindow.webContents.on("will-navigate", (event, url) => {
+    if (packagedAppOrigin && url.startsWith(packagedAppOrigin)) {
+      return;
+    }
     const currentUrl = mainWindow?.webContents.getURL();
     if (currentUrl && url !== currentUrl) {
       event.preventDefault();
@@ -87,6 +157,9 @@ function createWindow() {
     if (process.env.INS_DESKTOP_OPEN_DEVTOOLS === "1") {
       mainWindow.webContents.openDevTools({ mode: "detach" });
     }
+  } else if (packagedAppOrigin) {
+    // Prefer http://127.0.0.1 over file:// so MapLibre basemap tile fetches work.
+    void mainWindow.loadURL(`${packagedAppOrigin}/index.html`);
   } else {
     void mainWindow.loadFile(
       path.join(process.resourcesPath, "dist-desktop", "index.html"),
@@ -105,7 +178,7 @@ app.on("second-instance", () => {
   mainWindow.focus();
 });
 
-app.whenReady().then(() => {
+app.whenReady().then(async () => {
   ipcMain.handle("ins:choose-directory", async () => {
     const result = await dialog.showOpenDialog(mainWindow ?? undefined, {
       title: "选择 INS 工作区目录",
@@ -167,6 +240,18 @@ app.whenReady().then(() => {
       }
     },
   );
+
+  if (!isDevelopment) {
+    try {
+      const { origin } = await startPackagedStaticServer(
+        path.join(process.resourcesPath, "dist-desktop"),
+      );
+      packagedAppOrigin = origin;
+    } catch (error) {
+      console.error("Failed to start packaged UI server", error);
+      packagedAppOrigin = null;
+    }
+  }
 
   createWindow();
   app.on("activate", () => {

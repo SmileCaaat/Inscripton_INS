@@ -463,7 +463,9 @@ export function BibliometricsTrial({
             <p className="studio-biblio-network-note is-inline">{network.missing}</p>
           ) : !network.fromCorpus ? (
             <p className="studio-biblio-network-note is-inline">
-              当前题录还不够画这种网，先显示澳门示例网络。检索或导入之后会改用工作区数据。
+              {network.data.network.items.length === 0
+                ? "当前还没有可展示的网络。检索或导入题录后会在这里生成。"
+                : "当前题录还不够画这种网，先显示澳门示例网络。检索或导入之后会改用工作区数据。"}
             </p>
           ) : null}
           <div className="studio-biblio-canvas-stage">

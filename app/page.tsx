@@ -77,6 +77,7 @@ import {
   SAMPLE_NODE_YEARS,
   SENADO_SQUARE_RING,
 } from "./sample-map-inscriptions";
+import { INS_CLEAN_START } from "./release-mode";
 import {
   applyBiblioArrange,
   BIBLIO_AUTHOR_HEIGHT,
@@ -856,6 +857,21 @@ function stampSampleNode(node: KnowledgeNode): KnowledgeNode {
   };
 }
 
+function createEmptyWorkspace(): WorkspaceRecord {
+  return {
+    id: "workspace-blank",
+    name: "未命名工作区",
+    nodes: [],
+    relations: [],
+    assets: [],
+    scenes: [{ ...blankScene }],
+    topics: [],
+    graphAnnotations: [],
+    deliveryPackages: [],
+    biblioCorpus: emptyBiblioCorpus(),
+  };
+}
+
 function createInitialWorkspace(): WorkspaceRecord {
   return {
     id: "workspace-ruins",
@@ -869,6 +885,10 @@ function createInitialWorkspace(): WorkspaceRecord {
     deliveryPackages: [],
     biblioCorpus: emptyBiblioCorpus(),
   };
+}
+
+function createBootstrapWorkspace(): WorkspaceRecord {
+  return INS_CLEAN_START ? createEmptyWorkspace() : createInitialWorkspace();
 }
 
 const directoryInputProps = {
@@ -1367,13 +1387,19 @@ function ExplorerView({
           </div>
           <div className="visual-note note-a">
             <span>SPACE NODE</span>
-            <strong>大三巴高地</strong>
-            <small>22°11′51″N · 113°32′27″E</small>
+            <strong>{INS_CLEAN_START ? scene.title : "大三巴高地"}</strong>
+            <small>
+              {INS_CLEAN_START
+                ? "在节点属性或地图中标注空间"
+                : "22°11′51″N · 113°32′27″E"}
+            </small>
           </div>
           <div className="visual-note note-b">
             <span>TIME MARK</span>
-            <strong>1835</strong>
-            <small>火灾与建筑形态变迁</small>
+            <strong>{INS_CLEAN_START ? scene.index : "1835"}</strong>
+            <small>
+              {INS_CLEAN_START ? "用时间轴组织叙事场景" : "火灾与建筑形态变迁"}
+            </small>
           </div>
           <div className="visual-orbit orbit-one" />
           <div className="visual-orbit orbit-two" />
@@ -1417,13 +1443,20 @@ function ExplorerView({
 }
 
 export default function Home() {
+  const bootstrap = createBootstrapWorkspace();
   const [section, setSection] = useState<Section>("graph");
-  const [workspaces, setWorkspaces] = useState<WorkspaceRecord[]>(() => [createInitialWorkspace()]);
-  const [activeWorkspaceId, setActiveWorkspaceId] = useState("workspace-ruins");
-  const [selectedNodeId, setSelectedNodeId] = useState("space-ruins");
-  const [selectedNodeIds, setSelectedNodeIds] = useState<string[]>(["space-ruins"]);
+  const [workspaces, setWorkspaces] = useState<WorkspaceRecord[]>(() => [bootstrap]);
+  const [activeWorkspaceId, setActiveWorkspaceId] = useState(bootstrap.id);
+  const [selectedNodeId, setSelectedNodeId] = useState(
+    () => bootstrap.nodes[0]?.id ?? "",
+  );
+  const [selectedNodeIds, setSelectedNodeIds] = useState<string[]>(() =>
+    bootstrap.nodes[0]?.id ? [bootstrap.nodes[0].id] : [],
+  );
   const [search, setSearch] = useState("");
-  const [selectedAssetId, setSelectedAssetId] = useState("asset-2");
+  const [selectedAssetId, setSelectedAssetId] = useState(
+    () => bootstrap.assets[0]?.id ?? "",
+  );
   const [dragActive, setDragActive] = useState(false);
   const [activeScene, setActiveScene] = useState(0);
   const [explorer, setExplorer] = useState(false);
@@ -2397,6 +2430,15 @@ export default function Home() {
         const parsed = JSON.parse(stored) as WorkspaceRecord[];
         if (Array.isArray(parsed) && parsed.length > 0) {
           const migrated = parsed.map((workspace) => {
+            if (INS_CLEAN_START) {
+              return {
+                ...workspace,
+                graphAnnotations: workspace.graphAnnotations ?? [],
+                deliveryPackages: workspace.deliveryPackages ?? [],
+                biblioCorpus: workspace.biblioCorpus ?? emptyBiblioCorpus(),
+                nodes: workspace.nodes.map((node) => migrateBiblioAuthorNode(node)),
+              };
+            }
             const sampleNodeAssets = new Map(
               initialNodes.map((node) => [node.id, node.assetIds ?? []]),
             );
@@ -2473,7 +2515,11 @@ export default function Home() {
         }
       }
     } catch {
-      setNotice("本地数据读取失败，已使用示例工作区");
+      setNotice(
+        INS_CLEAN_START
+          ? "本地数据读取失败，已使用空白工作区"
+          : "本地数据读取失败，已使用示例工作区",
+      );
     } finally {
       setHydrated(true);
     }

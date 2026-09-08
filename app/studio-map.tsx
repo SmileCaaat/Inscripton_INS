@@ -21,6 +21,13 @@ import {
   type StudioMapGeo,
 } from "./geo";
 import {
+  BUILTIN_TIANDITU_TK,
+  probeTiandituToken,
+  resolveBasemapStyle,
+  resolveTiandituToken,
+  writeStoredTiandituToken,
+} from "./tianditu-basemap";
+import {
   nodesToFeatureCollection,
   parseMapFile,
   type MapPlaceDraft,
@@ -33,6 +40,7 @@ import {
   TRIP_DURATION,
   type InscriptionKind,
 } from "./sample-map-inscriptions";
+import { INS_CLEAN_START } from "./release-mode";
 
 export type StudioMapNode = {
   id: string;
@@ -90,11 +98,18 @@ type LayerToggles = {
   trips: boolean;
 };
 
-const BASEMAP_STYLE = "https://tiles.openfreemap.org/styles/positron";
 const MAP_PIXEL_RATIO =
   typeof window === "undefined" ? 1 : Math.min(window.devicePixelRatio || 1, 1.25);
 
 function setBasemapLabels(map: MapLibreGLMap, visible: boolean) {
+  if (map.getLayer("tianditu-cva")) {
+    map.setLayoutProperty(
+      "tianditu-cva",
+      "visibility",
+      visible ? "visible" : "none",
+    );
+    return;
+  }
   const layers = map.getStyle()?.layers ?? [];
   for (const layer of layers) {
     if (layer.type === "symbol") {
@@ -293,6 +308,15 @@ export const StudioMapView = memo(function StudioMapView({
   const [tripsPlaying, setTripsPlaying] = useState(true);
   const [basemapLabels, setBasemapLabelsVisible] = useState(false);
   basemapLabelsRef.current = basemapLabels;
+  const [tiandituTkDraft, setTiandituTkDraft] = useState(BUILTIN_TIANDITU_TK);
+  const [tiandituTk, setTiandituTk] = useState(BUILTIN_TIANDITU_TK);
+  const [tiandituStatus, setTiandituStatus] = useState("");
+  const [tiandituChecking, setTiandituChecking] = useState(false);
+  const basemapStyle = useMemo(
+    () => resolveBasemapStyle(tiandituTk),
+    [tiandituTk],
+  );
+  const usingCustomTk = tiandituTk.trim() !== BUILTIN_TIANDITU_TK;
   const [nodeLabels, setNodeLabels] = useState<NodeLabelMode>("all");
   const [drawMode, setDrawMode] = useState<DrawMode>("select");
   const [boxStart, setBoxStart] = useState<LngLat | null>(null);
@@ -317,6 +341,64 @@ export const StudioMapView = memo(function StudioMapView({
     image: true,
     practice: true,
   });
+
+  useEffect(() => {
+    const token = resolveTiandituToken();
+    setTiandituTk(token);
+    setTiandituTkDraft(token);
+  }, []);
+
+  useEffect(() => {
+    let cancelled = false;
+    setTiandituChecking(true);
+    void probeTiandituToken(tiandituTk).then((result) => {
+      if (cancelled) return;
+      setTiandituChecking(false);
+      setTiandituStatus(
+        result.ok ? "底图密钥可用。" : result.message,
+      );
+      if (!result.ok) onNotice?.(result.message);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [onNotice, tiandituTk]);
+
+  const applyTiandituTk = useCallback(() => {
+    const next = tiandituTkDraft.trim();
+    if (!next) {
+      onNotice?.("请输入天地图 tk，或点击「恢复内置」。");
+      return;
+    }
+    setTiandituChecking(true);
+    void probeTiandituToken(next).then((result) => {
+      setTiandituChecking(false);
+      if (!result.ok) {
+        setTiandituStatus(result.message);
+        onNotice?.(result.message);
+        return;
+      }
+      if (next === BUILTIN_TIANDITU_TK) {
+        writeStoredTiandituToken(null);
+      } else {
+        writeStoredTiandituToken(next);
+      }
+      setTiandituTk(next);
+      setTiandituStatus("底图密钥可用。");
+      onNotice?.(
+        next === BUILTIN_TIANDITU_TK
+          ? "已使用课堂内置天地图 tk。"
+          : "已应用自定义天地图 tk。",
+      );
+    });
+  }, [onNotice, tiandituTkDraft]);
+
+  const resetTiandituTk = useCallback(() => {
+    writeStoredTiandituToken(null);
+    setTiandituTkDraft(BUILTIN_TIANDITU_TK);
+    setTiandituTk(BUILTIN_TIANDITU_TK);
+    onNotice?.("已恢复课堂内置天地图 tk。");
+  }, [onNotice]);
 
   const inRange = useCallback(
     (start?: number, end?: number) => yearsOverlap(start, end, yearFrom, yearTo),
@@ -362,14 +444,14 @@ export const StudioMapView = memo(function StudioMapView({
   }, [layers.arcs, locatedById, relations]);
   const heatMarks = useMemo(
     () =>
-      inscriptions.practice && layers.heat
+      !INS_CLEAN_START && inscriptions.practice && layers.heat
         ? SAMPLE_HEAT_MARKS.filter((mark) => inRange(mark.yearFrom, mark.yearTo))
         : [],
     [inRange, inscriptions.practice, layers.heat],
   );
   const trips = useMemo(
     () =>
-      inscriptions.practice && layers.trips
+      !INS_CLEAN_START && inscriptions.practice && layers.trips
         ? SAMPLE_TRIPS.filter(
             (trip) => inscriptions[trip.inscription] && inRange(trip.yearFrom, trip.yearTo),
           )
@@ -920,6 +1002,40 @@ export const StudioMapView = memo(function StudioMapView({
               onChange={importFile}
             />
           </div>
+          <div className="studio-map-tk">
+            <strong>天地图 tk</strong>
+            <p>
+              必须使用控制台里的「浏览器端」密钥（不要用服务器端）。
+              默认使用课堂内置密钥
+              {usingCustomTk ? "；当前为自定义 tk" : ""}。
+            </p>
+            <input
+              value={tiandituTkDraft}
+              onChange={(event) => setTiandituTkDraft(event.target.value)}
+              placeholder="粘贴天地图浏览器端 tk"
+              spellCheck={false}
+              autoComplete="off"
+            />
+            <div className="studio-map-tk-actions">
+              <button type="button" onClick={applyTiandituTk} disabled={tiandituChecking}>
+                {tiandituChecking ? "检查中…" : "应用"}
+              </button>
+              <button type="button" onClick={resetTiandituTk} disabled={tiandituChecking}>
+                恢复内置
+              </button>
+            </div>
+            {tiandituStatus ? (
+              <p
+                className={
+                  tiandituStatus.includes("可用")
+                    ? "studio-map-tk-status is-ok"
+                    : "studio-map-tk-status is-error"
+                }
+              >
+                {tiandituStatus}
+              </p>
+            ) : null}
+          </div>
           <strong>图层</strong>
           <div className="studio-map-layers">
             <button
@@ -1047,7 +1163,7 @@ export const StudioMapView = memo(function StudioMapView({
             zoom: 14.1,
             pitch: 0,
           }}
-          mapStyle={BASEMAP_STYLE}
+          mapStyle={basemapStyle}
           style={{ width: "100%", height: "100%" }}
           onLoad={(event) => {
             const map = event.target;

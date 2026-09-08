@@ -130,6 +130,9 @@ test("map view places knowledge nodes on MapLibre with deck.gl", async () => {
   assert.match(geo, /export function yearsOverlap/);
   assert.match(geo, /export function geoFromRing/);
   assert.match(map, /react-map-gl\/maplibre/);
+  assert.match(map, /tianditu-basemap/);
+  assert.match(map, /天地图 tk/);
+  assert.match(map, /恢复内置/);
   assert.match(map, /ins-map-heat/);
   assert.match(map, /TripsLayer/);
   assert.match(map, /PolygonLayer/);
@@ -282,6 +285,7 @@ test("bibliometrics preview renders a local VOSviewer network without leaving th
   assert.match(viteConfig, /vosviewerReact19Plugin/);
   assert.match(desktopConfig, /javaRandomEsmPlugin/);
   assert.match(desktopConfig, /vosviewerReact19Plugin/);
+  assert.match(desktopConfig, /__INS_CLEAN_START__/);
   assert.match(plugin, /export default class JavaRandom/);
   assert.match(plugin, /SECRET_INTERNALS_DO_NOT_USE_OR_YOU_WILL_BE_FIRED/);
   assert.match(plugin, /__insJsx/);

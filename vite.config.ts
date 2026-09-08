@@ -60,6 +60,7 @@ export default defineConfig(async () => {
         ? { watch: { useFsEvents: false, usePolling: true } }
         : {}),
     },
+    envPrefix: ["VITE_", "NEXT_PUBLIC_"],
     optimizeDeps: vosviewerOptimizeDeps(),
     plugins: [
       javaRandomEsmPlugin(),

@@ -2871,6 +2871,66 @@ kbd {
   display: none;
 }
 
+.studio-map-tk {
+  display: grid;
+  gap: 6px;
+  margin: 0 0 12px;
+}
+
+.studio-map-tk > strong {
+  font-size: 11px;
+}
+
+.studio-map-tk > p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.studio-map-tk input {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 5px 6px;
+  border: 1px solid var(--line);
+  background: #fff;
+  color: var(--ink);
+  font-size: 10px;
+  font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+}
+
+.studio-map-tk-actions {
+  display: flex;
+  gap: 6px;
+}
+
+.studio-map-tk-actions button {
+  flex: 1;
+  padding: 5px 6px;
+  border: 1px solid var(--line);
+  background: transparent;
+  cursor: pointer;
+  font-size: 10px;
+}
+
+.studio-map-tk-actions button:hover {
+  border-color: var(--ink);
+}
+
+.studio-map-tk-status {
+  margin: 0;
+  font-size: 10px;
+  line-height: 1.45;
+}
+
+.studio-map-tk-status.is-ok {
+  color: #315c4b;
+}
+
+.studio-map-tk-status.is-error {
+  color: #8a3b2b;
+}
+
 .studio-map-place-empty {
   margin: 0;
   color: var(--muted);
