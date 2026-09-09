@@ -980,7 +980,27 @@
 }
 
 .reference-asset-dock .dock-collapse {
+  margin-left: 0;
+}
+
+.dock-icon-scale {
   margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 148px;
+  color: var(--muted);
+  font-size: 8px;
+  letter-spacing: 0.04em;
+  user-select: none;
+}
+
+.dock-icon-scale input[type="range"] {
+  width: 88px;
+  height: 18px;
+  margin: 0;
+  cursor: pointer;
+  accent-color: #a23b2a;
 }
 
 .reference-dock-body {
@@ -1034,11 +1054,11 @@
 }
 
 .reference-dock-assets > button {
-  width: 132px;
-  min-width: 132px;
+  width: var(--dock-card-width, 132px);
+  min-width: var(--dock-card-width, 132px);
   padding: 0;
   display: grid;
-  grid-template-rows: minmax(56px, 1fr) auto auto;
+  grid-template-rows: minmax(var(--dock-thumb-height, 56px), 1fr) auto auto;
   overflow: hidden;
   border: 1px solid var(--line);
   background: #fffefb;
@@ -1053,7 +1073,8 @@
 }
 
 .reference-dock-assets > button > div {
-  min-height: 56px;
+  min-height: var(--dock-thumb-height, 56px);
+  height: var(--dock-thumb-height, 56px);
   display: grid;
   place-items: center;
   overflow: hidden;
@@ -1087,6 +1108,40 @@
   font-size: 7px;
 }
 
+.reference-asset-dock[data-icon-scale="list"] .reference-dock-assets {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+}
+
+.reference-asset-dock[data-icon-scale="list"] .reference-dock-assets > button {
+  width: 100%;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 36px minmax(0, 1fr);
+  grid-template-rows: auto auto;
+  column-gap: 8px;
+  align-items: center;
+  background: #fffefb;
+}
+
+.reference-asset-dock[data-icon-scale="list"] .reference-dock-assets > button > div {
+  width: 36px;
+  min-height: 36px;
+  height: 36px;
+  grid-row: 1 / span 2;
+}
+
+.reference-asset-dock[data-icon-scale="list"] .reference-dock-assets strong {
+  padding: 6px 8px 0 0;
+  font-size: 10px;
+}
+
+.reference-asset-dock[data-icon-scale="list"] .reference-dock-assets small {
+  padding: 0 8px 6px 0;
+  font-size: 8px;
+}
+
 .reference-dock-empty {
   min-width: 280px;
   display: grid;
@@ -1094,6 +1149,12 @@
   border: 1px dashed var(--line);
   color: var(--muted);
   font-size: 9px;
+}
+
+.reference-asset-dock[data-icon-scale="list"] .reference-dock-empty {
+  min-height: 48px;
+  width: 100%;
+  min-width: 0;
 }
 
 .board-split-backdrop {
@@ -2178,9 +2239,9 @@ kbd {
 
 .graph-workspace {
   display: grid;
-  grid-template-rows: auto minmax(0, 1fr) var(--graph-dock-height, 148px);
+  grid-template-rows: auto minmax(0, 1fr) var(--graph-dock-height, 190px);
   min-height: 0;
-  --graph-dock-height: 148px;
+  --graph-dock-height: 190px;
   --graph-nodes-drawer-width: 0px;
   background: #ebe8df;
 }
@@ -2191,6 +2252,16 @@ kbd {
 
 .graph-workspace[data-nodes-drawer="true"] {
   --graph-nodes-drawer-width: min(320px, 42vw);
+}
+
+.graph-workspace[data-dock-resizing="true"],
+.graph-workspace[data-dock-resizing="true"] * {
+  cursor: ns-resize !important;
+  user-select: none !important;
+}
+
+.graph-workspace[data-dock-resizing="true"] .reference-dock-resizer {
+  background: #a23b2a;
 }
 
 .graph-stage {
@@ -3734,123 +3805,6 @@ kbd {
   position: relative;
   border-top: 1px solid var(--ink);
   background: #f8f6f0;
-}
-
-.graph-asset-dock > header {
-  height: 36px;
-  padding: 4px 9px 4px 12px;
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  border-bottom: 1px solid var(--line);
-}
-
-.graph-asset-dock > header > div {
-  min-width: 110px;
-  display: grid;
-}
-
-.graph-asset-dock > header span,
-.graph-asset-dock > header strong {
-  display: block;
-}
-
-.graph-asset-dock > header span {
-  color: var(--rust);
-  font-size: 8px;
-  font-weight: 800;
-  letter-spacing: 0.14em;
-}
-
-.graph-asset-dock > header strong {
-  margin-top: 1px;
-  font-size: 12px;
-}
-
-.graph-asset-dock > header > p {
-  margin: 0;
-  color: var(--ink);
-  font-size: 11px;
-  opacity: 0.72;
-}
-
-.graph-asset-dock .dock-collapse {
-  margin-left: auto;
-}
-
-.graph-asset-dock > header button {
-  min-height: 24px;
-  padding: 0 8px;
-  border: 1px solid var(--line);
-  background: #fffefb;
-  cursor: pointer;
-  font-size: 11px;
-}
-
-.graph-dock-body {
-  height: calc(100% - 36px);
-  min-height: 0;
-  padding: 8px 10px;
-  overflow: auto;
-}
-
-.graph-dock-assets {
-  display: grid;
-  grid-auto-flow: column;
-  grid-auto-columns: 88px;
-  grid-template-rows: repeat(2, minmax(0, 1fr));
-  gap: 8px;
-  min-height: 100%;
-  align-content: start;
-}
-
-.graph-dock-assets button {
-  min-width: 0;
-  padding: 0;
-  overflow: hidden;
-  border: 1px solid var(--line);
-  background: #f4f1e9;
-  cursor: grab;
-  text-align: left;
-}
-
-.graph-dock-assets button:active {
-  cursor: grabbing;
-}
-
-.graph-dock-assets button > span,
-.graph-dock-thumb {
-  height: 44px;
-  display: grid;
-  place-items: center;
-  overflow: hidden;
-  background: #24252a;
-  color: white;
-  font-size: 10px;
-  font-weight: 700;
-}
-
-.graph-dock-thumb img {
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-}
-
-.graph-dock-assets button > small {
-  display: block;
-  overflow: hidden;
-  padding: 5px 6px;
-  font-size: 10px;
-  line-height: 1.3;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.graph-dock-empty {
-  margin: 8px 2px;
-  color: var(--ink);
-  font-size: 12px;
-  opacity: 0.7;
 }
 
 .graph-selection-toolbar {

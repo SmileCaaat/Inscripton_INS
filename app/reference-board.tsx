@@ -39,6 +39,12 @@ import {
 import { nativeFilePath } from "./studio-hotkeys";
 import { AssetPreview } from "./asset-preview";
 import type { TextSaveReason } from "./text-documents";
+import {
+  ASSET_DOCK_ICON_SCALE_DEFAULT,
+  assetDockIconScaleStyle,
+  readAssetDockIconScale,
+  writeAssetDockIconScale,
+} from "./asset-dock-scale";
 
 export type BoardAsset = {
   id: string;
@@ -893,6 +899,9 @@ export function ReferenceBoardView({
   );
   const [edges, setEdges] = useState<Edge[]>([]);
   const [dockHeight, setDockHeight] = useState(190);
+  const [dockIconScale, setDockIconScale] = useState(
+    ASSET_DOCK_ICON_SCALE_DEFAULT,
+  );
   const [previewWidth, setPreviewWidth] = useState(
     REFERENCE_PREVIEW_DEFAULT_WIDTH,
   );
@@ -984,6 +993,15 @@ export function ReferenceBoardView({
       cancelled = true;
     };
   }, [assets]);
+
+  useEffect(() => {
+    setDockIconScale(readAssetDockIconScale());
+  }, []);
+
+  const dockIconStyle = useMemo(
+    () => assetDockIconScaleStyle(dockIconScale),
+    [dockIconScale],
+  );
 
   useEffect(() => {
     try {
@@ -2176,7 +2194,16 @@ export function ReferenceBoardView({
         </aside>
       </div>
 
-      <section className="reference-asset-dock">
+      <section
+        className="reference-asset-dock"
+        data-icon-scale={dockIconStyle.mode}
+        style={
+          {
+            "--dock-card-width": `${dockIconStyle.cardWidth || 132}px`,
+            "--dock-thumb-height": `${dockIconStyle.thumbHeight}px`,
+          } as CSSProperties
+        }
+      >
         <button
           type="button"
           className="reference-dock-resizer"
@@ -2204,6 +2231,22 @@ export function ReferenceBoardView({
               全部资源
             </button>
           </nav>
+          <label className="dock-icon-scale">
+            <span>列表</span>
+            <input
+              type="range"
+              min={0}
+              max={100}
+              value={dockIconScale}
+              aria-label="资源图标大小"
+              onChange={(event) => {
+                const next = Number(event.target.value);
+                setDockIconScale(next);
+                writeAssetDockIconScale(next);
+              }}
+            />
+            <span>大图</span>
+          </label>
           <button
             type="button"
             className="dock-collapse"

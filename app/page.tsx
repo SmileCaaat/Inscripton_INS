@@ -77,6 +77,12 @@ import {
   SAMPLE_NODE_YEARS,
   SENADO_SQUARE_RING,
 } from "./sample-map-inscriptions";
+import {
+  ASSET_DOCK_ICON_SCALE_DEFAULT,
+  assetDockIconScaleStyle,
+  readAssetDockIconScale,
+  writeAssetDockIconScale,
+} from "./asset-dock-scale";
 import { INS_CLEAN_START } from "./release-mode";
 import {
   applyBiblioArrange,
@@ -1490,6 +1496,12 @@ export default function Home() {
   );
   const [basicInfoOpen, setBasicInfoOpen] = useState(true);
   const [graphDockCollapsed, setGraphDockCollapsed] = useState(false);
+  const [graphDockHeight, setGraphDockHeight] = useState(190);
+  const [graphDockIconScale, setGraphDockIconScale] = useState(
+    ASSET_DOCK_ICON_SCALE_DEFAULT,
+  );
+  const [graphDockFilter, setGraphDockFilter] = useState<"node" | "all">("all");
+  const [graphDockFolder, setGraphDockFolder] = useState("all");
   const [nodesDrawerOpen, setNodesDrawerOpen] = useState(false);
   const [versionsOpen, setVersionsOpen] = useState(false);
   const [versions, setVersions] = useState<WorkspaceVersion[]>([]);
@@ -1521,6 +1533,7 @@ export default function Home() {
     max: number;
   } | null>(null);
   const flowInstance = useRef<ReactFlowInstance<StudioFlowNode, FlowEdge> | null>(null);
+  const graphWorkspaceRef = useRef<HTMLDivElement>(null);
   const historyPast = useRef<GraphHistoryEntry[]>([]);
   const historyFuture = useRef<GraphHistoryEntry[]>([]);
   const nodeDragActive = useRef(false);
@@ -1664,6 +1677,39 @@ export default function Home() {
       return folderMatches && kindMatches && searchMatches;
     });
   }, [assetFolderFilter, assetKindFilter, assets, search]);
+
+  const graphDockAssets = useMemo(() => {
+    const base =
+      graphDockFilter === "node" && selectedNode
+        ? assets.filter((asset) => (selectedNode.assetIds ?? []).includes(asset.id))
+        : assets;
+    return base.filter((asset) => {
+      if (graphDockFolder === "all") return true;
+      if (graphDockFolder === "Deliveries") {
+        return asset.path.includes("Deliveries");
+      }
+      if (
+        graphDockFolder === "image" ||
+        graphDockFolder === "document" ||
+        graphDockFolder === "model" ||
+        graphDockFolder === "video" ||
+        graphDockFolder === "audio" ||
+        graphDockFolder === "text"
+      ) {
+        return asset.kind === graphDockFolder;
+      }
+      return asset.path.includes(graphDockFolder);
+    });
+  }, [assets, graphDockFilter, graphDockFolder, selectedNode]);
+
+  const graphDockIconStyle = useMemo(
+    () => assetDockIconScaleStyle(graphDockIconScale),
+    [graphDockIconScale],
+  );
+
+  useEffect(() => {
+    setGraphDockIconScale(readAssetDockIconScale());
+  }, []);
 
   const visibleNodeIds = useMemo(
     () => new Set(graphNodes.map((node) => node.id)),
@@ -1854,6 +1900,63 @@ export default function Home() {
       x: rect.left + rect.width / 2,
       y: rect.top + rect.height / 2,
     });
+  };
+
+  const startGraphDockResize = (
+    event: ReactPointerEvent<HTMLButtonElement>,
+  ) => {
+    event.preventDefault();
+    if (graphDockCollapsed || event.button !== 0) return;
+    const workspace = graphWorkspaceRef.current;
+    if (!workspace) return;
+    const resizeHandle = event.currentTarget;
+    const pointerId = event.pointerId;
+    const startY = event.clientY;
+    const startHeight = graphDockHeight;
+    let pendingHeight = startHeight;
+    let animationFrame: number | null = null;
+    let finished = false;
+
+    resizeHandle.setPointerCapture(pointerId);
+    workspace.dataset.dockResizing = "true";
+
+    const clampHeight = (height: number) =>
+      Math.max(118, Math.min(340, height));
+
+    const paint = () => {
+      animationFrame = null;
+      workspace.style.setProperty("--graph-dock-height", `${pendingHeight}px`);
+    };
+
+    const onMove = (moveEvent: PointerEvent) => {
+      if (moveEvent.pointerId !== pointerId) return;
+      pendingHeight = clampHeight(startHeight - (moveEvent.clientY - startY));
+      if (animationFrame == null) {
+        animationFrame = window.requestAnimationFrame(paint);
+      }
+    };
+
+    const finish = (upEvent: PointerEvent) => {
+      if (finished || upEvent.pointerId !== pointerId) return;
+      finished = true;
+      if (animationFrame != null) {
+        window.cancelAnimationFrame(animationFrame);
+      }
+      workspace.dataset.dockResizing = "false";
+      try {
+        resizeHandle.releasePointerCapture(pointerId);
+      } catch {
+        // already released
+      }
+      window.removeEventListener("pointermove", onMove);
+      window.removeEventListener("pointerup", finish);
+      window.removeEventListener("pointercancel", finish);
+      setGraphDockHeight(clampHeight(pendingHeight));
+    };
+
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", finish);
+    window.addEventListener("pointercancel", finish);
   };
 
   const dropAssetsOntoGraph = (
@@ -4415,9 +4518,18 @@ export default function Home() {
           <div className="workspace-content">
             {section === "graph" && (
               <div
+                ref={graphWorkspaceRef}
                 className="graph-workspace"
                 data-dock-collapsed={graphDockCollapsed ? "true" : "false"}
                 data-nodes-drawer={nodesDrawerOpen ? "true" : "false"}
+                data-dock-resizing="false"
+                style={
+                  {
+                    "--graph-dock-height": graphDockCollapsed
+                      ? "36px"
+                      : `${graphDockHeight}px`,
+                  } as CSSProperties
+                }
               >
                 <div className="graph-intro">
                   <div>
@@ -4696,82 +4808,197 @@ export default function Home() {
                 </div>
                 </div>
 
-                <section className="graph-asset-dock">
+                <section
+                  className="reference-asset-dock graph-asset-dock"
+                  data-icon-scale={graphDockIconStyle.mode}
+                  style={
+                    {
+                      "--dock-card-width": `${graphDockIconStyle.cardWidth || 132}px`,
+                      "--dock-thumb-height": `${graphDockIconStyle.thumbHeight}px`,
+                    } as CSSProperties
+                  }
+                >
+                  <button
+                    type="button"
+                    className="reference-dock-resizer"
+                    aria-label="调整资源目录高度"
+                    onPointerDown={startGraphDockResize}
+                  />
                   <header>
                     <div>
                       <span>RESOURCE DIRECTORY</span>
                       <strong>资源目录</strong>
                     </div>
-                    <p>拖到空白画布生成节点 · 拖到节点挂入资源</p>
+                    <nav>
+                      <button
+                        type="button"
+                        className={graphDockFilter === "node" ? "active" : ""}
+                        onClick={() => setGraphDockFilter("node")}
+                      >
+                        当前节点
+                      </button>
+                      <button
+                        type="button"
+                        className={graphDockFilter === "all" ? "active" : ""}
+                        onClick={() => setGraphDockFilter("all")}
+                      >
+                        全部资源
+                      </button>
+                    </nav>
+                    <label className="dock-icon-scale">
+                      <span>列表</span>
+                      <input
+                        type="range"
+                        min={0}
+                        max={100}
+                        value={graphDockIconScale}
+                        aria-label="资源图标大小"
+                        onChange={(event) => {
+                          const next = Number(event.target.value);
+                          setGraphDockIconScale(next);
+                          writeAssetDockIconScale(next);
+                        }}
+                      />
+                      <span>大图</span>
+                    </label>
                     <button
                       type="button"
                       className="dock-collapse"
-                      onClick={() => setGraphDockCollapsed((current) => !current)}
+                      onClick={() =>
+                        setGraphDockCollapsed((current) => !current)
+                      }
                     >
                       {graphDockCollapsed ? "展开" : "收起"}
                     </button>
-                    <button type="button" onClick={() => setSection("assets")}>
-                      全部资源
-                    </button>
                   </header>
                   {!graphDockCollapsed && (
-                    <div className="graph-dock-body">
-                      <div className="graph-dock-assets">
-                        {assets.length === 0 ? (
-                          <p className="graph-dock-empty">
-                            暂无资源。可从资源页导入，或把文件直接拖到上方画布。
-                          </p>
-                        ) : (
-                          assets.slice(0, 48).map((asset) => (
-                            <button
-                              type="button"
-                              draggable
-                              key={asset.id}
-                              title={`拖动「${asset.name}」到画布或节点`}
-                              onDragStart={(event) => {
-                                event.dataTransfer.setData(
-                                  "application/x-ins-asset",
-                                  asset.id,
-                                );
-                                event.dataTransfer.effectAllowed = "copy";
-                              }}
-                              onClick={() => {
-                                if (selectedNodeId) {
-                                  attachAssetToNode(selectedNodeId, asset.id);
-                                  return;
-                                }
-                                dropAssetsOntoGraph(
-                                  [asset.id],
-                                  getGraphDropPosition(),
-                                );
-                              }}
-                              onContextMenu={(event) => {
-                                event.preventDefault();
-                                event.stopPropagation();
-                                setSelectedAssetId(asset.id);
-                                setAssetContextMenu({
-                                  x: event.clientX,
-                                  y: event.clientY,
-                                  assetId: asset.id,
-                                });
-                              }}
-                            >
+                    <div className="reference-dock-body">
+                      <aside>
+                        <button
+                          type="button"
+                          className={graphDockFolder === "all" ? "active" : ""}
+                          onClick={() => {
+                            setGraphDockFolder("all");
+                            setGraphDockFilter("all");
+                          }}
+                        >
+                          ▾ 📁 Assets <small>{assets.length}</small>
+                        </button>
+                        <button
+                          type="button"
+                          className={
+                            graphDockFolder === "Deliveries" ? "active" : ""
+                          }
+                          onClick={() => {
+                            setGraphDockFolder("Deliveries");
+                            setGraphDockFilter("all");
+                          }}
+                        >
+                          　📦 交付包
+                        </button>
+                        <button
+                          type="button"
+                          className={graphDockFolder === "image" ? "active" : ""}
+                          onClick={() => {
+                            setGraphDockFolder("image");
+                            setGraphDockFilter("all");
+                          }}
+                        >
+                          　📁 图像
+                        </button>
+                        <button
+                          type="button"
+                          className={
+                            graphDockFolder === "document" ? "active" : ""
+                          }
+                          onClick={() => {
+                            setGraphDockFolder("document");
+                            setGraphDockFilter("all");
+                          }}
+                        >
+                          　📁 文献
+                        </button>
+                        <button
+                          type="button"
+                          className={graphDockFolder === "model" ? "active" : ""}
+                          onClick={() => {
+                            setGraphDockFolder("model");
+                            setGraphDockFilter("all");
+                          }}
+                        >
+                          　📁 三维模型
+                        </button>
+                        <button
+                          type="button"
+                          className={graphDockFolder === "text" ? "active" : ""}
+                          onClick={() => {
+                            setGraphDockFolder("text");
+                            setGraphDockFilter("all");
+                          }}
+                        >
+                          　📁 文本
+                        </button>
+                      </aside>
+                      <div className="reference-dock-assets">
+                        {graphDockAssets.map((asset) => (
+                          <button
+                            type="button"
+                            draggable
+                            key={asset.id}
+                            className={
+                              asset.id === selectedAssetId ? "selected" : ""
+                            }
+                            title={`拖动「${asset.name}」到画布或节点`}
+                            onDragStart={(event) => {
+                              event.dataTransfer.setData(
+                                "application/x-ins-asset",
+                                asset.id,
+                              );
+                              event.dataTransfer.effectAllowed = "copy";
+                            }}
+                            onClick={() => {
+                              setSelectedAssetId(asset.id);
+                              if (selectedNodeId) {
+                                attachAssetToNode(selectedNodeId, asset.id);
+                                return;
+                              }
+                              dropAssetsOntoGraph(
+                                [asset.id],
+                                getGraphDropPosition(),
+                              );
+                            }}
+                            onContextMenu={(event) => {
+                              event.preventDefault();
+                              event.stopPropagation();
+                              setSelectedAssetId(asset.id);
+                              setAssetContextMenu({
+                                x: event.clientX,
+                                y: event.clientY,
+                                assetId: asset.id,
+                              });
+                            }}
+                          >
+                            <div className={`asset-${asset.kind}`}>
                               {asset.previewUrl && asset.kind === "image" ? (
-                                <span className="graph-dock-thumb">
-                                  <img
-                                    src={asset.previewUrl}
-                                    alt=""
-                                    draggable={false}
-                                  />
-                                </span>
+                                <img
+                                  src={asset.previewUrl}
+                                  alt=""
+                                  draggable={false}
+                                />
                               ) : (
-                                <span className={`asset-${asset.kind}`}>
-                                  {assetGlyph(asset.kind)}
-                                </span>
+                                <span>{assetGlyph(asset.kind)}</span>
                               )}
-                              <small>{asset.name}</small>
-                            </button>
-                          ))
+                            </div>
+                            <strong>{asset.name}</strong>
+                            <small>{asset.path}</small>
+                          </button>
+                        ))}
+                        {graphDockAssets.length === 0 && (
+                          <div className="reference-dock-empty">
+                            {graphDockFilter === "node"
+                              ? "当前节点还没有挂资源。切换到“全部资源”，或把文件拖到画布。"
+                              : "暂无资源。可从资源页导入，或把文件直接拖到上方画布。"}
+                          </div>
                         )}
                       </div>
                     </div>
