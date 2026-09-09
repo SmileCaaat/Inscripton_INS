@@ -350,12 +350,11 @@ const sectionMeta: Array<{
 }> = [
   { id: "assets", label: "资源", shortcut: "1" },
   { id: "boards", label: "参考板", shortcut: "2" },
-  { id: "nodes", label: "节点", shortcut: "3" },
-  { id: "graph", label: "图谱", shortcut: "4" },
-  { id: "map", label: "地图", shortcut: "5" },
-  { id: "biblio", label: "计量", shortcut: "8" },
-  { id: "archive", label: "归档", shortcut: "6" },
-  { id: "ocr", label: "OCR", shortcut: "7" },
+  { id: "graph", label: "图谱", shortcut: "3" },
+  { id: "map", label: "地图", shortcut: "4" },
+  { id: "archive", label: "归档", shortcut: "5" },
+  { id: "ocr", label: "OCR", shortcut: "6" },
+  { id: "biblio", label: "计量", shortcut: "7" },
 ];
 
 const initialNodes: KnowledgeNode[] = [
@@ -947,6 +946,15 @@ function assetGlyph(kind: AssetItem["kind"]) {
   return "IMG";
 }
 
+function nodeKindFromAssetKind(kind: AssetItem["kind"]): NodeKind {
+  if (kind === "document" || kind === "text") return "Document";
+  return "Media";
+}
+
+function titleFromAssetName(name: string) {
+  return name.replace(/\.[^.]+$/, "").trim() || name;
+}
+
 function duplicateAssetName(name: string) {
   const dot = name.lastIndexOf(".");
   if (dot <= 0) return `${name} 副本`;
@@ -1481,6 +1489,8 @@ export default function Home() {
     ASSET_PREVIEW_DEFAULT_WIDTH,
   );
   const [basicInfoOpen, setBasicInfoOpen] = useState(true);
+  const [graphDockCollapsed, setGraphDockCollapsed] = useState(false);
+  const [nodesDrawerOpen, setNodesDrawerOpen] = useState(false);
   const [versionsOpen, setVersionsOpen] = useState(false);
   const [versions, setVersions] = useState<WorkspaceVersion[]>([]);
   const [graphContextMenu, setGraphContextMenu] = useState<GraphContextMenuState | null>(null);
@@ -1807,6 +1817,83 @@ export default function Home() {
     flash(`已将「${asset.name}」放入节点`);
   };
 
+  const buildNodeFromAsset = (
+    asset: AssetItem,
+    position: { x: number; y: number },
+  ): KnowledgeNode => {
+    const kind = nodeKindFromAssetKind(asset.kind);
+    const label = kindMeta[kind].label;
+    return {
+      id: `node-${crypto.randomUUID()}`,
+      kind,
+      title: titleFromAssetName(asset.name),
+      subtitle: `${label} · 由资源生成`,
+      period: "待考",
+      summary: `由资源「${asset.name}」拖入图谱生成。可在右侧改成人物、空间或其他类型。`,
+      tags: ["待整理"],
+      assetCount: 1,
+      assetIds: [asset.id],
+      x: position.x,
+      y: position.y,
+    };
+  };
+
+  const getGraphDropPosition = (clientX?: number, clientY?: number) => {
+    if (!flowInstance.current) return { x: 350, y: 180 };
+    if (clientX != null && clientY != null) {
+      return flowInstance.current.screenToFlowPosition({
+        x: clientX,
+        y: clientY,
+      });
+    }
+    const rect = document
+      .querySelector(".graph-canvas")
+      ?.getBoundingClientRect();
+    if (!rect) return { x: 350, y: 180 };
+    return flowInstance.current.screenToFlowPosition({
+      x: rect.left + rect.width / 2,
+      y: rect.top + rect.height / 2,
+    });
+  };
+
+  const dropAssetsOntoGraph = (
+    assetIds: string[],
+    position: { x: number; y: number },
+  ) => {
+    const unique = [...new Set(assetIds)].filter(Boolean);
+    const matched = unique
+      .map((id) => assets.find((asset) => asset.id === id))
+      .filter((asset): asset is AssetItem => Boolean(asset));
+    if (matched.length === 0) return;
+    commitGraphHistory();
+    const created = matched.map((asset, index) =>
+      buildNodeFromAsset(asset, {
+        x: position.x + index * 36,
+        y: position.y + index * 28,
+      }),
+    );
+    const matchedIds = new Set(matched.map((asset) => asset.id));
+    updateActiveWorkspace((workspace) => ({
+      ...workspace,
+      nodes: [...workspace.nodes, ...created],
+      assets: workspace.assets.map((item) =>
+        matchedIds.has(item.id)
+          ? { ...item, references: item.references + 1 }
+          : item,
+      ),
+    }));
+    const last = created[created.length - 1];
+    setSelectedNodeId(last.id);
+    setSelectedNodeIds(created.map((node) => node.id));
+    setInspectorOpen(true);
+    setSection("graph");
+    flash(
+      created.length === 1
+        ? `已用「${created[0].title}」生成${kindMeta[created[0].kind].label}节点`
+        : `已用 ${created.length} 个资源生成节点`,
+    );
+  };
+
   const importFilesIntoNode = async (nodeId: string, files: File[]) => {
     if (files.length === 0) return;
     commitGraphHistory();
@@ -1847,6 +1934,54 @@ export default function Home() {
     setSelectedNodeId(nodeId);
     setSelectedNodeIds([nodeId]);
     flash(`已将 ${additions.length} 个本地文件导入节点`);
+  };
+
+  const importFilesOntoGraph = async (
+    files: File[],
+    position: { x: number; y: number },
+  ) => {
+    if (files.length === 0) return;
+    commitGraphHistory();
+    const additions = files.slice(0, 20).map((file, index): AssetItem => {
+      const kind = assetKind(file);
+      return {
+        id: `graph-import-${Date.now()}-${index}`,
+        name: file.name,
+        path: "图谱直接导入/",
+        kind,
+        size: formatBytes(file.size),
+        mimeType: file.type || undefined,
+        fileSize: file.size,
+        references: 1,
+        previewUrl: URL.createObjectURL(file),
+        localPath: nativeFilePath(file),
+      };
+    });
+    await Promise.all(
+      additions.map((asset, index) =>
+        storeLocalAssetBlob(asset.id, files[index]),
+      ),
+    );
+    const created = additions.map((asset, index) =>
+      buildNodeFromAsset(asset, {
+        x: position.x + index * 36,
+        y: position.y + index * 28,
+      }),
+    );
+    updateActiveWorkspace((workspace) => ({
+      ...workspace,
+      assets: [...additions, ...workspace.assets],
+      nodes: [...workspace.nodes, ...created],
+    }));
+    const last = created[created.length - 1];
+    setSelectedNodeId(last.id);
+    setSelectedNodeIds(created.map((node) => node.id));
+    setInspectorOpen(true);
+    flash(
+      created.length === 1
+        ? `已用「${created[0].title}」生成${kindMeta[created[0].kind].label}节点`
+        : `已导入 ${created.length} 个文件并生成节点`,
+    );
   };
 
   const [flowNodes, setFlowNodes] = useState<StudioFlowNode[]>(() =>
@@ -2354,6 +2489,25 @@ export default function Home() {
   };
 
   useEffect(() => {
+    if (section !== "nodes") return;
+    setSection("graph");
+    setNodesDrawerOpen(true);
+  }, [section]);
+
+  const focusGraphNode = (nodeId: string) => {
+    const target = nodes.find((node) => node.id === nodeId);
+    setSelectedNodeId(nodeId);
+    setSelectedNodeIds([nodeId]);
+    setInspectorOpen(true);
+    setSection("graph");
+    if (!target || !flowInstance.current) return;
+    flowInstance.current.setCenter(target.x + 90, target.y + 48, {
+      zoom: Math.max(flowInstance.current.getZoom(), 0.85),
+      duration: 240,
+    });
+  };
+
+  useEffect(() => {
     const preventBrowserContextMenu = (event: MouseEvent) => {
       event.preventDefault();
     };
@@ -2366,7 +2520,6 @@ export default function Home() {
     const onAssetKeyDown = (event: KeyboardEvent) => {
       if (explorer || dialog) return;
       if (section === "graph" || section === "boards" || section === "map" || section === "biblio") return;
-      if (section === "nodes") return;
       if (isTypingTarget(event.target)) return;
       const ctrl = event.ctrlKey || event.metaKey;
       const key = event.key.toLowerCase();
@@ -2633,6 +2786,7 @@ export default function Home() {
         setWorkspaceMenuOpen(false);
         setGraphContextMenu(null);
         setAssetContextMenu(null);
+        setNodesDrawerOpen(false);
         cancelRelationEdit();
       }
       if (event.altKey) {
@@ -3004,7 +3158,7 @@ export default function Home() {
     setSelectedNodeId(id);
     setSelectedNodeIds([id]);
     setSection("graph");
-    flash("已创建 Concept Node");
+    flash("已创建概念节点");
   };
 
   const createMapPlaces = (places: MapPlaceDraft[]) => {
@@ -3778,7 +3932,7 @@ export default function Home() {
   };
 
   useEffect(() => {
-    if (section !== "graph" && section !== "nodes") return;
+    if (section !== "graph") return;
     const onGraphKeyDown = (event: KeyboardEvent) => {
       if (explorer || dialog) return;
       if (isTypingTarget(event.target)) return;
@@ -4109,7 +4263,7 @@ export default function Home() {
           {!sidebarCollapsed && (
             <>
               <button className="new-node-button" type="button" onClick={createNode}>
-                <span>＋</span> 创建 Node
+                <span>＋</span> 创建节点
               </button>
 
               <div className="node-type-list">
@@ -4237,24 +4391,34 @@ export default function Home() {
               </select>
               <button
                 type="button"
-                className={section === "graph" ? "active" : ""}
-                onClick={() => setSection("graph")}
+                className={section === "graph" && !nodesDrawerOpen ? "active" : ""}
+                onClick={() => {
+                  setSection("graph");
+                  setNodesDrawerOpen(false);
+                }}
               >
                 图谱
               </button>
               <button
                 type="button"
-                className={section === "nodes" ? "active" : ""}
-                onClick={() => setSection("nodes")}
+                className={section === "graph" && nodesDrawerOpen ? "active" : ""}
+                onClick={() => {
+                  setSection("graph");
+                  setNodesDrawerOpen((open) => !open);
+                }}
               >
-                列表
+                节点列表
               </button>
             </div>
           </div>
 
           <div className="workspace-content">
             {section === "graph" && (
-              <div className="graph-workspace">
+              <div
+                className="graph-workspace"
+                data-dock-collapsed={graphDockCollapsed ? "true" : "false"}
+                data-nodes-drawer={nodesDrawerOpen ? "true" : "false"}
+              >
                 <div className="graph-intro">
                   <div>
                     <span>工作区知识图谱</span>
@@ -4267,6 +4431,13 @@ export default function Home() {
                         ? ` · 已隐藏 ${hiddenNodeKinds.size} 类`
                         : ""}
                     </p>
+                    <button
+                      type="button"
+                      className={nodesDrawerOpen ? "active" : ""}
+                      onClick={() => setNodesDrawerOpen((open) => !open)}
+                    >
+                      {nodesDrawerOpen ? "收起列表" : "节点列表"}
+                    </button>
                     {biblioNodeCount > 0 ? (
                       <button type="button" onClick={arrangeBiblioGraphNodes}>
                         一键排列
@@ -4278,7 +4449,82 @@ export default function Home() {
                   </div>
                 </div>
 
-                <div className="graph-canvas">
+                <div className="graph-stage">
+                  <aside className="graph-nodes-drawer" aria-hidden={!nodesDrawerOpen}>
+                    <header>
+                      <div>
+                        <span>NODE LIST</span>
+                        <strong>节点列表</strong>
+                      </div>
+                      <button
+                        type="button"
+                        className="button-primary"
+                        onClick={createNode}
+                      >
+                        ＋ 创建
+                      </button>
+                      <button
+                        type="button"
+                        aria-label="关闭节点列表"
+                        onClick={() => setNodesDrawerOpen(false)}
+                      >
+                        ×
+                      </button>
+                    </header>
+                    <div
+                      className="graph-nodes-drawer-list"
+                      onContextMenu={(event) => {
+                        event.preventDefault();
+                        setGraphContextMenu({
+                          x: event.clientX,
+                          y: event.clientY,
+                          nodeId: null,
+                        });
+                      }}
+                    >
+                      {listedNodes.length === 0 ? (
+                        <p className="graph-nodes-drawer-empty">
+                          暂无节点。可创建空白节点，或从下方资源拖到画布生成。
+                        </p>
+                      ) : (
+                        listedNodes.map((node) => (
+                          <button
+                            type="button"
+                            key={node.id}
+                            className={
+                              selectedNodeId === node.id ? "selected" : ""
+                            }
+                            onClick={() => focusGraphNode(node.id)}
+                            onContextMenu={(event) => {
+                              event.preventDefault();
+                              event.stopPropagation();
+                              setSelectedNodeId(node.id);
+                              setSelectedNodeIds([node.id]);
+                              setGraphContextMenu({
+                                x: event.clientX,
+                                y: event.clientY,
+                                nodeId: node.id,
+                              });
+                            }}
+                          >
+                            <i style={{ background: kindMeta[node.kind].color }}>
+                              {kindMeta[node.kind].mark}
+                            </i>
+                            <span>
+                              <strong>{node.title}</strong>
+                              <small>
+                                {kindMeta[node.kind].label}
+                                {node.period ? ` · ${node.period}` : ""}
+                                {` · ${node.assetCount} 资源`}
+                              </small>
+                            </span>
+                          </button>
+                        ))
+                      )}
+                    </div>
+                  </aside>
+
+                  <div className="graph-canvas">
                   <ReactFlowCanvas
                     nodes={flowNodes}
                     edges={flowEdges}
@@ -4299,6 +4545,9 @@ export default function Home() {
                     onDragOver={(event) => {
                       if (
                         event.dataTransfer.types.includes("application/x-ins-asset") ||
+                        event.dataTransfer.types.includes(
+                          "application/x-ins-reference-asset",
+                        ) ||
                         event.dataTransfer.types.includes("Files")
                       ) {
                         event.preventDefault();
@@ -4306,21 +4555,35 @@ export default function Home() {
                       }
                     }}
                     onDrop={(event) => {
-                      const assetId = event.dataTransfer.getData("application/x-ins-asset");
+                      const assetId =
+                        event.dataTransfer.getData("application/x-ins-asset") ||
+                        event.dataTransfer.getData(
+                          "application/x-ins-reference-asset",
+                        );
+                      const files = Array.from(event.dataTransfer.files);
+                      if (!assetId && files.length === 0) return;
+                      event.preventDefault();
                       const target = document
                         .elementFromPoint(event.clientX, event.clientY)
                         ?.closest<HTMLElement>("[data-node-id]");
                       const nodeId = target?.dataset.nodeId;
-                      if (!nodeId) return;
-                      event.preventDefault();
-                      if (assetId) {
-                        attachAssetToNode(nodeId, assetId);
+                      if (nodeId) {
+                        if (assetId) {
+                          attachAssetToNode(nodeId, assetId);
+                          return;
+                        }
+                        void importFilesIntoNode(nodeId, files);
                         return;
                       }
-                      void importFilesIntoNode(
-                        nodeId,
-                        Array.from(event.dataTransfer.files),
+                      const position = getGraphDropPosition(
+                        event.clientX,
+                        event.clientY,
                       );
+                      if (assetId) {
+                        dropAssetsOntoGraph([assetId], position);
+                        return;
+                      }
+                      void importFilesOntoGraph(files, position);
                     }}
                     onNodeClick={(event, node) => {
                       setSelectedNodeId(node.id);
@@ -4394,52 +4657,6 @@ export default function Home() {
                       ariaLabel="图谱缩略图：点击或拖动可移动视口"
                     />
 
-                    <Panel position="top-left" className="graph-asset-dock">
-                      <div className="graph-asset-dock-heading">
-                        <div>
-                          <span>ASSET DOCK</span>
-                          <strong>拖入节点</strong>
-                        </div>
-                        <button type="button" onClick={() => setSection("assets")}>全部</button>
-                      </div>
-                      <div className="graph-asset-dock-list">
-                        {assets.slice(0, 6).map((asset) => (
-                          <button
-                            type="button"
-                            draggable
-                            className="nodrag nopan"
-                            key={asset.id}
-                            title={`拖动「${asset.name}」到节点`}
-                            onDragStart={(event) => {
-                              event.dataTransfer.setData("application/x-ins-asset", asset.id);
-                              event.dataTransfer.effectAllowed = "copy";
-                            }}
-                            onClick={() => {
-                              if (selectedNodeId) {
-                                attachAssetToNode(selectedNodeId, asset.id);
-                              } else {
-                                flash("请先选择一个节点，再点击或拖入资产");
-                              }
-                            }}
-                            onContextMenu={(event) => {
-                              event.preventDefault();
-                              event.stopPropagation();
-                              setSelectedAssetId(asset.id);
-                              setAssetContextMenu({
-                                x: event.clientX,
-                                y: event.clientY,
-                                assetId: asset.id,
-                              });
-                            }}
-                          >
-                            <span className={`asset-${asset.kind}`}>{assetGlyph(asset.kind)}</span>
-                            <small>{asset.name}</small>
-                          </button>
-                        ))}
-                      </div>
-                      <p>拖入 Node 成为内容 · 从节点右侧圆点牵线创建对象</p>
-                    </Panel>
-
                     {selectedNodeIds.length > 0 && (
                       <Panel position="top-right" className="graph-selection-toolbar">
                         <span>{selectedNodeIds.length} 个对象</span>
@@ -4467,14 +4684,99 @@ export default function Home() {
                       <Panel position="top-center" className="graph-empty">
                         <span>EMPTY GRAPH</span>
                         <h2>这个工作区还没有节点</h2>
-                        <p>创建第一个 Node，再把图片、文献、模型或视频直接拖进去。</p>
+                        <p>
+                          从下方资源目录拖到空白画布即可生成节点；拖到已有节点则挂入该节点。也可从节点右侧圆点牵线创建对象。
+                        </p>
                         <button type="button" className="button-primary" onClick={createNode}>
-                          ＋ 创建第一个 Node
+                          ＋ 创建第一个节点
                         </button>
                       </Panel>
                     )}
                   </ReactFlowCanvas>
                 </div>
+                </div>
+
+                <section className="graph-asset-dock">
+                  <header>
+                    <div>
+                      <span>RESOURCE DIRECTORY</span>
+                      <strong>资源目录</strong>
+                    </div>
+                    <p>拖到空白画布生成节点 · 拖到节点挂入资源</p>
+                    <button
+                      type="button"
+                      className="dock-collapse"
+                      onClick={() => setGraphDockCollapsed((current) => !current)}
+                    >
+                      {graphDockCollapsed ? "展开" : "收起"}
+                    </button>
+                    <button type="button" onClick={() => setSection("assets")}>
+                      全部资源
+                    </button>
+                  </header>
+                  {!graphDockCollapsed && (
+                    <div className="graph-dock-body">
+                      <div className="graph-dock-assets">
+                        {assets.length === 0 ? (
+                          <p className="graph-dock-empty">
+                            暂无资源。可从资源页导入，或把文件直接拖到上方画布。
+                          </p>
+                        ) : (
+                          assets.slice(0, 48).map((asset) => (
+                            <button
+                              type="button"
+                              draggable
+                              key={asset.id}
+                              title={`拖动「${asset.name}」到画布或节点`}
+                              onDragStart={(event) => {
+                                event.dataTransfer.setData(
+                                  "application/x-ins-asset",
+                                  asset.id,
+                                );
+                                event.dataTransfer.effectAllowed = "copy";
+                              }}
+                              onClick={() => {
+                                if (selectedNodeId) {
+                                  attachAssetToNode(selectedNodeId, asset.id);
+                                  return;
+                                }
+                                dropAssetsOntoGraph(
+                                  [asset.id],
+                                  getGraphDropPosition(),
+                                );
+                              }}
+                              onContextMenu={(event) => {
+                                event.preventDefault();
+                                event.stopPropagation();
+                                setSelectedAssetId(asset.id);
+                                setAssetContextMenu({
+                                  x: event.clientX,
+                                  y: event.clientY,
+                                  assetId: asset.id,
+                                });
+                              }}
+                            >
+                              {asset.previewUrl && asset.kind === "image" ? (
+                                <span className="graph-dock-thumb">
+                                  <img
+                                    src={asset.previewUrl}
+                                    alt=""
+                                    draggable={false}
+                                  />
+                                </span>
+                              ) : (
+                                <span className={`asset-${asset.kind}`}>
+                                  {assetGlyph(asset.kind)}
+                                </span>
+                              )}
+                              <small>{asset.name}</small>
+                            </button>
+                          ))
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </section>
               </div>
             )}
 
@@ -4497,76 +4799,6 @@ export default function Home() {
                 onArrangeGraph={arrangeBiblioGraphNodes}
                 onNotice={flash}
               />
-            )}
-
-            {section === "nodes" && (
-              <div className="nodes-view">
-                <div className="section-hero compact">
-                  <div>
-                    <span>KNOWLEDGE NODES</span>
-                    <h1>全部节点</h1>
-                    <p>对象是知识组织的核心，文件只作为节点所引用的数字资源。</p>
-                  </div>
-                  <button className="button-primary" type="button" onClick={createNode}>
-                    ＋ 创建 Node
-                  </button>
-                </div>
-                <div
-                  className="node-table"
-                  onContextMenu={(event) => {
-                    event.preventDefault();
-                    setGraphContextMenu({
-                      x: event.clientX,
-                      y: event.clientY,
-                      nodeId: null,
-                    });
-                  }}
-                >
-                  <div className="node-table-header">
-                    <span>节点</span>
-                    <span>类型</span>
-                    <span>时间</span>
-                    <span>资源</span>
-                    <span>更新</span>
-                  </div>
-                  {listedNodes.map((node, index) => (
-                    <button
-                      type="button"
-                      key={node.id}
-                      className={selectedNodeId === node.id ? "selected" : ""}
-                      onClick={() => {
-                        setSelectedNodeId(node.id);
-                        setSelectedNodeIds([node.id]);
-                      }}
-                      onContextMenu={(event) => {
-                        event.preventDefault();
-                        event.stopPropagation();
-                        setSelectedNodeId(node.id);
-                        setSelectedNodeIds([node.id]);
-                        setGraphContextMenu({
-                          x: event.clientX,
-                          y: event.clientY,
-                          nodeId: node.id,
-                        });
-                      }}
-                    >
-                      <span className="node-table-name">
-                        <i style={{ background: kindMeta[node.kind].color }}>
-                          {kindMeta[node.kind].mark}
-                        </i>
-                        <span>
-                          <strong>{node.title}</strong>
-                          <small>{node.subtitle}</small>
-                        </span>
-                      </span>
-                      <span>{kindMeta[node.kind].label}</span>
-                      <span>{node.period}</span>
-                      <span>{node.assetCount}</span>
-                      <span>{index === 0 ? "刚刚" : `${index + 1} 天前`}</span>
-                    </button>
-                  ))}
-                </div>
-              </div>
             )}
 
             {section === "assets" && (
@@ -5174,13 +5406,30 @@ export default function Home() {
                   {kindMeta[selectedNode.kind].mark}
                 </span>
                 <div>
-                  <small>{selectedNode.kind.toUpperCase()} NODE</small>
+                  <small>{kindMeta[selectedNode.kind].label}节点</small>
                   <input
                     value={selectedNode.title}
                     onChange={(event) => updateSelectedNode({ title: event.target.value })}
                   />
                 </div>
               </div>
+
+              <label className="inspector-kind">
+                <span>节点类型</span>
+                <select
+                  aria-label="节点类型"
+                  value={selectedNode.kind}
+                  onChange={(event) =>
+                    updateSelectedNode({ kind: event.target.value as NodeKind })
+                  }
+                >
+                  {(Object.keys(kindMeta) as NodeKind[]).map((kind) => (
+                    <option value={kind} key={kind}>
+                      {kindMeta[kind].label}
+                    </option>
+                  ))}
+                </select>
+              </label>
 
               <div className="inspector-section">
                 <div className="inspector-section-title">

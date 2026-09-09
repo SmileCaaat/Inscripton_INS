@@ -50,7 +50,7 @@ test("starter preview is fully removed", async () => {
   await assert.rejects(access(new URL("../app/_sites-preview", import.meta.url)));
   assert.match(page, /ArchiveView/);
   assert.match(page, /拖入文件或整个目录/);
-  assert.match(page, /创建 Node/);
+  assert.match(page, /创建节点/);
   assert.match(layout, /lang="zh-CN"/);
   assert.doesNotMatch(packageJson, /react-loading-skeleton/);
   assert.doesNotMatch(page, /SkeletonPreview/);
@@ -72,7 +72,7 @@ test("core workspace interactions are wired", async () => {
 
   assert.match(
     page,
-    /id: "assets", label: "资源", shortcut: "1"[\s\S]*id: "boards", label: "参考板", shortcut: "2"[\s\S]*id: "nodes", label: "节点", shortcut: "3"[\s\S]*id: "graph", label: "图谱", shortcut: "4"[\s\S]*id: "map", label: "地图", shortcut: "5"/,
+    /id: "assets", label: "资源", shortcut: "1"[\s\S]*id: "boards", label: "参考板", shortcut: "2"[\s\S]*id: "graph", label: "图谱", shortcut: "3"[\s\S]*id: "map", label: "地图", shortcut: "4"/,
   );
   assert.match(page, /createWorkspace/);
   assert.match(page, /switchWorkspace/);
@@ -85,14 +85,23 @@ test("core workspace interactions are wired", async () => {
   assert.match(page, /data-node-id=/);
   assert.match(
     page,
-    /id: "archive", label: "归档", shortcut: "6"/,
+    /id: "archive", label: "归档", shortcut: "5"/,
   );
-  assert.match(page, /id: "ocr", label: "OCR", shortcut: "7"/);
-  assert.match(page, /id: "biblio", label: "计量", shortcut: "8"/);
+  assert.match(page, /id: "ocr", label: "OCR", shortcut: "6"/);
+  assert.match(page, /id: "biblio", label: "计量", shortcut: "7"/);
   assert.match(page, /hiddenNodeKinds/);
   assert.match(page, /LayerVisibilityIcon/);
   assert.match(page, /node-type-visibility/);
   assert.match(page, /在图谱中隐藏/);
+  assert.match(page, /dropAssetsOntoGraph/);
+  assert.match(page, /importFilesOntoGraph/);
+  assert.match(page, /inspector-kind/);
+  assert.match(page, /资源目录/);
+  assert.match(page, /data-dock-collapsed/);
+  assert.match(page, /nodesDrawerOpen/);
+  assert.match(page, /graph-nodes-drawer/);
+  assert.match(page, /focusGraphNode/);
+  assert.doesNotMatch(page, /id: "nodes", label: "节点"/);
   assert.doesNotMatch(page, /label: "Narrative"/);
   assert.doesNotMatch(page, /label: "专题"/);
 });
@@ -181,7 +190,7 @@ test("bibliometrics preview renders a local VOSviewer network without leaving th
       readFile(new URL("../app/vos-ui-i18n.ts", import.meta.url), "utf8"),
     ]);
 
-  assert.match(page, /id: "biblio", label: "计量", shortcut: "8"/);
+  assert.match(page, /id: "biblio", label: "计量", shortcut: "7"/);
   assert.match(page, /StudioBiblioCanvas/);
   assert.match(page, /section === "biblio"/);
   assert.match(page, /biblioCorpus/);
@@ -423,8 +432,9 @@ test("local file reveal and global edit shortcuts are wired", async () => {
   assert.match(page, /isTypingTarget/);
   assert.match(page, /revealNodeLocalFile/);
   assert.match(page, /section === "graph" \|\| section === "boards"/);
-  assert.match(page, /section === "nodes"/);
-  assert.match(page, /section !== "graph" && section !== "nodes"/);
+  assert.match(page, /if \(section !== "graph"\) return/);
+  assert.match(page, /if \(section !== "nodes"\) return/);
+  assert.match(page, /setNodesDrawerOpen\(true\)/);
   assert.match(board, /浏览到本地文件/);
   assert.match(board, /key === "f2"/);
   assert.match(board, /onRevealAsset/);
